@@ -1,0 +1,196 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\perceptron\\perceptron.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:branch\\perceptron\\perceptron.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\champsim_config.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:champsim_config.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\transformer\\transformer.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:branch\\transformer\\transformer.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\msl\\fwcounter.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:inc\\msl\\fwcounter.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\dram_controller.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\dram_controller.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\vmem.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\vmem.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\main.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:src\\main.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\dram_controller.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:inc\\dram_controller.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\environment.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:inc\\environment.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\hashed_perceptron\\hashed_perceptron.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:branch\\hashed_perceptron\\hashed_perceptron.cc||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 3,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 8,
+              "Title": "environment.h",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\environment.h",
+              "RelativeDocumentMoniker": "inc\\environment.h",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\environment.h",
+              "RelativeToolTip": "inc\\environment.h",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAEwCQAAAACAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
+              "WhenOpened": "2024-10-31T04:40:23.355Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 7,
+              "Title": "dram_controller.h",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\dram_controller.h",
+              "RelativeDocumentMoniker": "inc\\dram_controller.h",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\dram_controller.h",
+              "RelativeToolTip": "inc\\dram_controller.h",
+              "ViewState": "AgIAAEUAAAAAAAAAAAAAAGkAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
+              "WhenOpened": "2024-10-31T04:29:29.972Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "vmem.cc",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\vmem.cc",
+              "RelativeDocumentMoniker": "src\\vmem.cc",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\vmem.cc",
+              "RelativeToolTip": "src\\vmem.cc",
+              "ViewState": "AgIAABgAAAAAAAAAAAAAAC0AAAABAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2024-10-31T04:29:26.039Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "champsim_config.json",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\champsim_config.json",
+              "RelativeDocumentMoniker": "champsim_config.json",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\champsim_config.json",
+              "RelativeToolTip": "champsim_config.json",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAACoAAAAWAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
+              "WhenOpened": "2024-10-31T04:23:02.952Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "transformer.cc",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\transformer\\transformer.cc",
+              "RelativeDocumentMoniker": "branch\\transformer\\transformer.cc",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\transformer\\transformer.cc",
+              "RelativeToolTip": "branch\\transformer\\transformer.cc",
+              "ViewState": "AgIAAAwAAAAAAAAAAAAAABwAAAAJAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2024-10-30T05:39:37.862Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 6,
+              "Title": "main.cc",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\main.cc",
+              "RelativeDocumentMoniker": "src\\main.cc",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\main.cc",
+              "RelativeToolTip": "src\\main.cc",
+              "ViewState": "AgIAACcAAAAAAAAAAAAqwEwAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2024-10-30T04:41:01.696Z",
+              "EditorCaption": ""
+            }
+          ]
+        },
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 3,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 9,
+              "Title": "hashed_perceptron.cc",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\hashed_perceptron\\hashed_perceptron.cc",
+              "RelativeDocumentMoniker": "branch\\hashed_perceptron\\hashed_perceptron.cc",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\hashed_perceptron\\hashed_perceptron.cc",
+              "RelativeToolTip": "branch\\hashed_perceptron\\hashed_perceptron.cc",
+              "ViewState": "AgIAALkAAAAAAAAAAAAEwNUAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2024-10-31T04:13:51.98Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "fwcounter.h",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\msl\\fwcounter.h",
+              "RelativeDocumentMoniker": "inc\\msl\\fwcounter.h",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\inc\\msl\\fwcounter.h",
+              "RelativeToolTip": "inc\\msl\\fwcounter.h",
+              "ViewState": "AgIAAA8AAAAAAAAAAAAAACQAAAAVAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
+              "WhenOpened": "2024-10-31T03:56:36.269Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "dram_controller.cc",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\dram_controller.cc",
+              "RelativeDocumentMoniker": "src\\dram_controller.cc",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\src\\dram_controller.cc",
+              "RelativeToolTip": "src\\dram_controller.cc",
+              "ViewState": "AgIAAMYAAAAAAAAAAAAUwN0AAAAsAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2024-10-31T04:29:40.196Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "perceptron.cc",
+              "DocumentMoniker": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\perceptron\\perceptron.cc",
+              "RelativeDocumentMoniker": "branch\\perceptron\\perceptron.cc",
+              "ToolTip": "D:\\CapStoneProject\\BranchPrediciton\\ChampSim\\branch\\perceptron\\perceptron.cc",
+              "RelativeToolTip": "branch\\perceptron\\perceptron.cc",
+              "ViewState": "AgIAADgAAAAAAAAAAAAkwGYAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2024-10-30T05:39:58.726Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

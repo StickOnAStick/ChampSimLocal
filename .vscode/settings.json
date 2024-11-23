@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "vector": "cpp",
+        "*.inc": "cpp"
+    },
+    "cmake.sourceDirectory": "/mnt/d/CapStoneProject/BranchPrediciton/ChampSim/PyTorch"
+}
