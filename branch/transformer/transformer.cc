@@ -7,6 +7,8 @@
 
 #include "msl/fwcounter.h"
 #include "ooo_cpu.h"
+#include "./math/FixedVectorMath.hh"
+#include "./math/FixedVectorMath.cc"
 
 constexpr std::size_t WEIGHT_BITS = 8;     // We can quantize down to 4 later
 constexpr std::size_t HISTORY_LENGTH = 24; // We can adjust. Defaulting to current perceptron's length for closer 1-to-1 comparison

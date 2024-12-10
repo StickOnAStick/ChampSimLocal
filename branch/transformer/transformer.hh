@@ -6,6 +6,9 @@
 #include <cmath>
 #include "FixedVector.hh"
 
+#include "./math/FixedVectorMath.hh"
+#include "./math/FixedVectorMath.cc"
+
 #include <json.hpp> // Nlohmann-json dep
 
 

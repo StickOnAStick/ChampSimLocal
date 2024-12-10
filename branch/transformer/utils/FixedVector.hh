@@ -14,7 +14,7 @@ private:
     std::vector<T> vec;
     const std::size_t fixed_size; // Enforcement bounds, only used for throwing exceptions. 
 public:
-    explict FixedVector(size_t size) : vec(size), fixed_size(size) {};
+    explicit FixedVector(size_t size) : vec(size), fixed_size(size) {};
 
     T& operator[](std::size_t idx){
         if (idx >= fixed_size) throw std::out_of_range("Index out of bounds. Vec size: %d", fixed_size);
@@ -22,8 +22,8 @@ public:
     }
 
     const T& operator[](size_t idx) const {
-        if (index >= fixed_size) throw std::out_of_range("Index out of bounds");
-        return vec[index];
+        if (idx >= fixed_size) throw std::out_of_range("Index out of bounds");
+        return vec[idx];
     }
 
     size_t size() const {return fixed_size;}
