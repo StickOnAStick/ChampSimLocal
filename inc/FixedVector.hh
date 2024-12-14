@@ -59,6 +59,10 @@ public:
   auto begin() const { return vec.begin(); } // Const
   auto end() const { return vec.end(); }
 
+  size_t size() const {
+    return vec.size();
+  }
+
   // Disable operations that change size
   void push_back(const int&) = delete;
   void emplace_back(int) = delete;

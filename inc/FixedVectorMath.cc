@@ -72,21 +72,27 @@ namespace FixedVectorMath {
         return result;
     }
 
+    // Softmax 1D
+    template <typename T>
+    void softmax(FixedVector<T>& matrix) {
+        T maxVal = *std::max_element(matrix.begin(), matrix.end());
+        T sumExp = 0;
+
+        for (std::size_t i = 0; i < matrix.size(); i++) {
+            matrix[i] = std::exp(matrix[i] - maxVal); // Stability adjustment
+            sumExp += matrix[i];
+        }
+
+        for (std::size_t i = 0; i < matrix.size(); i++) {
+            matrix[i] /= sumExp;
+        }
+    }
+
     // Softmax
     template <typename T>
     void softmax(FixedVector<FixedVector<T>>& matrix) {
         for (std::size_t i = 0; i < matrix.size(); ++i) {
-            T maxVal = *std::max_element(matrix[i].begin(), matrix[i].end());
-            T sumExp = 0;
-
-            for (std::size_t j = 0; j < matrix[i].size(); ++j) {
-                matrix[i][j] = std::exp(matrix[i][j] - maxVal); // Stability adjustment
-                sumExp += matrix[i][j];
-            }
-
-            for (std::size_t j = 0; j < matrix[i].size(); ++j) {
-                matrix[i][j] /= sumExp;
-            }
+            softmax(matrix[i]);
         }
     }
 
@@ -101,7 +107,6 @@ namespace FixedVectorMath {
             }
         }
     }
-    
 }
 
 #endif // FIXED_VECTOR_MATH_H
