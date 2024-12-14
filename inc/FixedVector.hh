@@ -45,6 +45,10 @@ public:
     vec.push_back(new_val);
   };
 
+  size_t size() const {
+    return vec.size();
+  }
+
   // Disable operations that change size
   void push_back(const int&) = delete;
   void emplace_back(int) = delete;

@@ -17,7 +17,7 @@ namespace FixedVectorMath {
     // Normalize each row in the matrix (2D FixedVector)
     template <typename T>
     void normalize(FixedVector<FixedVector<T>>& matrix);
-    
+
 }
 
 #endif // FIXED_VECTOR_MATH_H
