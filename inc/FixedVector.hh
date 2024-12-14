@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <vector>
 
+#include "FixedVectorMath.hh"
+
 template <typename T>
 class FixedVector
 {
