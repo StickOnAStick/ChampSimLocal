@@ -1,9 +1,10 @@
 #ifndef FIXED_VECTOR_MATH_H
 #define FIXED_VECTOR_MATH_H
 
-#include "../utils/FixedVector.hh"
-#include "FixedVectorMath.hh"
 #include <cmath>
+#include "FixedVectorMath.hh"
+#include "FixedVector.hh"
+
 
 namespace FixedVectorMath {
 
