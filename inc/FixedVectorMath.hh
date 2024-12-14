@@ -3,10 +3,9 @@
 
 #include "FixedVector.hh"
 #include <cmath> // For sqrt and pow
+#include <algorithm>
 
-
-
-namespace {
+namespace FixedVectorMath {
     // Transpose operation for a matrix (2D FixedVector)
     template <typename T>
     FixedVector<FixedVector<T>> transpose(const FixedVector<FixedVector<T>>& matrix);

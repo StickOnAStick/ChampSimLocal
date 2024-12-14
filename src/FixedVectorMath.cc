@@ -1,10 +1,8 @@
-#ifndef FIXED_VECTOR_MATH_H
-#define FIXED_VECTOR_MATH_H
 
 #include <cmath>
+#include <algorithm>
 #include "FixedVectorMath.hh"
 #include "FixedVector.hh"
-
 
 namespace FixedVectorMath {
 
@@ -103,5 +101,3 @@ namespace FixedVectorMath {
     }
     
 }
-
-#endif // FIXED_VECTOR_MATH_H
