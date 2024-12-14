@@ -4,7 +4,7 @@
 #include "../utils/FixedVector.hh"
 #include <cmath> // For sqrt and pow
 
-namespace FixedVectorMath {
+namespace {
 
     // Transpose operation for a matrix (2D FixedVector)
     template <typename T>
