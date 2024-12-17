@@ -12,9 +12,8 @@ namespace FixedVectorMath {
         std::size_t rows = matrix.size();
         std::size_t cols = matrix[0].size();
 
-        FixedVector<FixedVector<T>> transposed(cols);
+        FixedVector<FixedVector<T>> transposed(cols, FixedVector<T>(rows, 0));
         for (std::size_t i = 0; i < cols; i++) {
-            transposed[i] = FixedVector<T>(rows);
             for (std::size_t j = 0; j < rows; j++) {
                 transposed[i][j] = matrix[j][i];
             }
