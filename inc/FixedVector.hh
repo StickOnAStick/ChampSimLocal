@@ -64,6 +64,22 @@ public:
     return vec.size();
   }
 
+  typename std::vector<T>::iterator begin() {
+    return vec.begin();
+  }
+
+  typename std::vector<T>::iterator end() {
+    return vec.end();
+  }
+
+  typename std::vector<T>::const_iterator begin() const {
+    return vec.begin();
+  }
+
+  typename std::vector<T>::const_iterator end() const {
+    return vec.end();
+  }
+
   // Disable operations that change size
   void push_back(const int&) = delete;
   void emplace_back(int) = delete;
