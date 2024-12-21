@@ -30,11 +30,10 @@ void Print2DVec(const FixedVector<FixedVector<T>>& vec2D) {
     std::cout << "End of 2D Vector" << std::endl;
 }
 
-void Normalize() {
+void Normalize(size_t size) {
     std::cout << "-----Normalize Test-----" << std::endl;
 
     // Arrange
-    size_t size = 4;
     FixedVector<float> floatVector(size, 0);
     for (int i = 0; i < floatVector.size(); i++) {
         floatVector[i] = 3;
@@ -49,12 +48,10 @@ void Normalize() {
     Print1DVec(floatVector);
 }
 
-void Transpose() {
+void Transpose(size_t rowsA, size_t colsB) {
     std::cout << "-----Transpose Test-----" << std::endl;
 
     // Arrange
-    size_t rowsA = 2;
-    size_t colsB = 6;
     FixedVector<FixedVector<float>> floatVector(rowsA, FixedVector<float>(colsB, 0));
     float amt = 0.0f;
     for (int i = 0; i < floatVector.size(); i++) {
@@ -73,12 +70,10 @@ void Transpose() {
     Print2DVec(outputVector);
 }
 
-void ApplyMask() {
+void ApplyMask(size_t rowsA, size_t colsB) {
     std::cout << "-----Apply Mask Test-----" << std::endl;
 
     // Arrange
-    size_t rowsA = 2;
-    size_t colsB = 6;
     FixedVector<FixedVector<float>> floatVector(rowsA, FixedVector<float>(colsB, 0));
     float amt = 0.0f;
     for (int i = 0; i < floatVector.size(); i++) {
@@ -105,12 +100,10 @@ void ApplyMask() {
     Print2DVec(floatVector);
 }
 
-void SoftMax() {
+void SoftMax(size_t rowsA, size_t colsB) {
     std::cout << "-----Softmax Test-----" << std::endl;
 
     // Arrange
-    size_t rowsA = 2;
-    size_t colsB = 6;
     FixedVector<FixedVector<float>> floatVector(rowsA, FixedVector<float>(colsB, 0));
     float amt = 0.0f;
     for (int i = 0; i < floatVector.size(); i++) {
@@ -129,12 +122,10 @@ void SoftMax() {
     Print2DVec(floatVector);
 }
 
-void DotProduct() {
+void DotProduct(size_t rowsA, size_t colsB) {
     std::cout << "-----Dot Product Test-----" << std::endl;
 
     // Arrange
-    size_t rowsA = 2;
-    size_t colsB = 6;
     FixedVector<FixedVector<float>> AVector(rowsA, FixedVector<float>(colsB, 0));
     float amt = 0.0f;
     for (int i = 0; i < AVector.size(); i++) {
@@ -165,11 +156,11 @@ void DotProduct() {
 
 int main() {
     // Coverage Tests
-    Normalize();
-    Transpose();
-    ApplyMask();
-    SoftMax();
-    DotProduct();
+    Normalize(4);
+    Transpose(2, 6);
+    ApplyMask(2, 6);
+    SoftMax(2, 6);
+    DotProduct(2, 6);
 
     std::cout << "Unit Testing Completed\n";
     return 0;
