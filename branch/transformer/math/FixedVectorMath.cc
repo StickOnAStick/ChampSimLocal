@@ -50,6 +50,56 @@ namespace FixedVectorMath {
             normalize(matrix[i]);
         }
     }
+
+    // Dot product of matrix
+    template <typename T>
+    FixedVector<FixedVector<T>> dotProduct(const FixedVector<FixedVector<T>>& A, const FixedVector<FixedVector<T>>& B) {
+        size_t rowsA = A.size();
+        size_t colsA = A[0].size();
+        size_t colsB = B[0].size();
+
+        FixedVector<FixedVector<T>> result(rowsA, FixedVector<T>(colsB, 0));
+
+        for (std::size_t i = 0; i < rowsA; ++i) {
+            for (std::size_t j = 0; j < colsB; ++j) {
+                for (std::size_t k = 0; k < colsA; ++k) {
+                    result[i][j] += A[i][k] * B[k][j];
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // Softmax
+    template <typename T>
+    void softmax(FixedVector<FixedVector<T>>& matrix) {
+        for (std::size_t i = 0; i < matrix.size(); ++i) {
+            T maxVal = *std::max_element(matrix[i].begin(), matrix[i].end());
+            T sumExp = 0;
+
+            for (std::size_t j = 0; j < matrix[i].size(); ++j) {
+                matrix[i][j] = std::exp(matrix[i][j] - maxVal); // Stability adjustment
+                sumExp += matrix[i][j];
+            }
+
+            for (std::size_t j = 0; j < matrix[i].size(); ++j) {
+                matrix[i][j] /= sumExp;
+            }
+        }
+    }
+
+    // Apply mask, used in Masked Multi Headed Attention
+    template <typename T>
+    void applyMask(FixedVector<FixedVector<T>>& scores, const FixedVector<FixedVector<T>>& mask) {
+        for (std::size_t i = 0; i < scores.size(); ++i) {
+            for (std::size_t j = 0; j < scores[i].size(); ++j) {
+                if (mask[i][j] == 0) {
+                    scores[i][j] = -std::numeric_limits<T>::infinity();
+                }
+            }
+        }
+    }
     
 }
 

@@ -8,7 +8,12 @@
 #include <bitset>
 
 #include "FixedVector.hh"
-#include <nlohmann/json.hpp> // Nlohmann-json dep
+
+#include "./math/FixedVectorMath.hh"
+#include "./math/FixedVectorMath.cc"
+
+#include <json.hpp> // Nlohmann-json dep
+
 
 using json = nlohmann::json;
 
