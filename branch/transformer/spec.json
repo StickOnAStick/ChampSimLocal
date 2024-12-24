@@ -6,9 +6,9 @@
     "d_k": 14,
     "d_v": 14,
     "d_pos": 6,
-    "num_ma_heads": 2,
-    "num_mma_heads": 2,
+    "num_ma_heads": 5,
+    "num_mma_heads": 5,
     "dropout_rate": 0.1,
     "sequence_len": 24,
-    "weights_file": "69-24-hashedPos.json"
+    "weights_file": "test.json"
 }
