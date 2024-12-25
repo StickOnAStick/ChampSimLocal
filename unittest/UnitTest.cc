@@ -84,16 +84,8 @@ void ApplyMask(size_t rowsA, size_t colsB) {
     }
     Print2DVec(floatVector);
 
-    FixedVector<FixedVector<float>> maskVector(rowsA, FixedVector<float>(colsB, 0));
-    for (int i = 0; i < maskVector.size(); i++) {
-        for (int j = 0; j < maskVector[i].size(); j++) {
-            maskVector[i][j] = ((i + j) % 2 == 0) ? 1.0f : 0.0f;
-        }
-    }
-    Print2DVec(maskVector);
-
     // Act
-    FixedVectorMath::applyMask(floatVector, maskVector);
+    FixedVectorMath::applyMask(floatVector);
 
     // Assert
     std::cout << "Apply Mask Test Output" << std::endl;
