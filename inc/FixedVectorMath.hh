@@ -13,13 +13,22 @@ namespace FixedVectorMath {
         std::size_t rows = matrix.size();
         std::size_t cols = matrix[0].size();
 
+        // Create the transposed matrix with 'cols' rows
         FixedVector<FixedVector<T>> transposed(cols);
-        for (std::size_t i = 0; i < cols; i++) {
-            transposed[i] = FixedVector<T>(rows);
-            for (std::size_t j = 0; j < rows; j++) {
+
+        // Initialize each row of the transposed matrix
+        for (std::size_t i = 0; i < cols; i++)
+        {
+            // Explicitly create a FixedVector<T> for each row of the transposed matrix
+            transposed[i] = FixedVector<T>(rows);  // No ambiguity here, as we are specifying the constructor
+
+            // Transpose the elements
+            for (std::size_t j = 0; j < rows; j++)
+            {
                 transposed[i][j] = matrix[j][i];
             }
         }
+
         return transposed;
     }
 
