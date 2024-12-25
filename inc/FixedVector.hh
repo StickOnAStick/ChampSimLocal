@@ -45,7 +45,12 @@ public:
     vec.push_back(new_val);
   }
 
-  size_t size() { return vec.size(); }
+  size_t size() const { return this->vec.size(); }
+
+  auto begin() { return vec.begin(); }       // Mutable
+  auto end() { return vec.end(); }
+  auto begin() const { return vec.begin(); } // Const
+  auto end() const { return vec.end(); }
 
   // Disable operations that change size
   void push_back(const int&) = delete;

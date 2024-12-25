@@ -184,7 +184,7 @@ namespace FixedVectorMath {
         if(A.size() != B.size())
             throw std::invalid_argument("Matricies cannot be of different sizes!");
 
-        auto *b_it = B.begin();
+        auto b_it = B.begin();
         for (FixedVector<T>& a : A){
             FixedVectorMath::add(a, *b_it);
             ++b_it;

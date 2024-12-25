@@ -14,8 +14,6 @@
 #include "FixedVector.hh"
 #include "FixedVectorMath.hh"
 
-constexpr std::size_t WEIGHT_BITS = 8;     // We can quantize down to 4 later
-constexpr std::size_t HISTORY_LENGTH = 24; // We can adjust. Defaulting to current perceptron's length for closer 1-to-1 comparison
 
 namespace
 {
@@ -25,13 +23,16 @@ class Transformer : public TransformerBase
 public:
   Transformer(const std::string& config_file) : TransformerBase(config_file) {}
 
-  void hashed_posEncoding(uint64_t& input, std::bitset<HISTLEN> global_history) override {
+  void hashed_posEncoding(uint64_t input) override {
+    uint64_t global_history = 0x121212;
     uint64_t hashed_input = (input & 0xFFF) ^ global_history; // Use 12 LSBs of IP, smaller locality, reduced HW cost
+    
+
     // Positionally encode based off hashed input XOR'd with recent global history
     uint8_t pos_enc = (hashed_input % static_cast<int>(pow(2, this->d_pos))); // Reduce to 5 bits.
 
     // Add IP bits to the constructed d_model vector
-    FixedVector<float> encoded_input(this->d_model);
+    FixedVector<float> encoded_input(this->d_model, 0.0f);
     for(int i = 0; i < this->d_in; i++){
       int bit = (input >> i) & 1;
       encoded_input[i] = bit;
@@ -47,8 +48,8 @@ public:
     this->sequence_history.push(encoded_input);
   }
 
-  void fixed_posEncoding(uint64_t& ip) override {
-    FixedVector<float> encoded_input(this->d_model);
+  void fixed_posEncoding(uint64_t ip) override {
+    FixedVector<float> encoded_input(this->d_model, 0.0f);
 
     for(int i = 0; i < this->d_model; i++){
       encoded_input[i] = (ip >> i) & 1;
@@ -98,7 +99,7 @@ public:
 
     FixedVector<FixedVector<float>> mask(sequence_len, FixedVector<float>(sequence_len, 0.0f));
     if (use_mask){
-      mask = FixedVectorMath::applyMask(mask);
+      FixedVectorMath::applyMask(mask);
     }
 
     /*
@@ -219,7 +220,7 @@ public:
 
   FixedVector<FixedVector<float>> FFLayer(FixedVector<FixedVector<float>>& input) override {
     /*
-      FFN(x) = max(0, xW_1 + b_1)W_2 + b_2
+      FFN(x) = ReLU(0, xW_1 + b_1)W_2 + b_2
 
       Flow:
         1) hidden = input * w_ff1 + b_ff1
@@ -270,7 +271,7 @@ public:
     //     => [d_model]
     //--------------------------------------------------------
     FixedVector<float> pooled(input[0].size(), 0.0f);
-    for(size_t i = 0; i < this->sequence_len; ++i){              // Σ h_i
+    for(int i = 0; i < this->sequence_len; ++i){              // Σ h_i
       for(size_t j = 0; j < input[0].size(); ++j){
         pooled[j] += input[i][j];
       }
@@ -298,15 +299,15 @@ public:
     return out;
   }
 
-  bool predict(uint64_t ip, std::bitset<HISTLEN> global_history){
+  bool predict(uint64_t ip){
 
     /*
       Positional Encoding
 
       Dealers choice, test with correct weights
     */
-    this->hashed_pos_encoding(&ip, global_history);
-    // fixed_pos_encoding(&ip);
+    //this->hashed_pos_encoding(&ip); // We want to use this one but it relies on global history which is not yet figured out.
+    this->fixed_posEncoding(ip);
 
 
     /*
@@ -323,17 +324,61 @@ public:
     FixedVectorMath::add(FF_out, MMA_out);
     FixedVectorMath::normalize(FF_out);
 
-    float out = this->normalizeOut(FF_out);
+    float out = this->layerNormalization(FF_out);
 
-
-    return out;
+    return bool(out);
   }
 };
 
+
+//--------------------------------------------------
+// Note, the actual transformer uses it's internal 
+// sequence_len / d_model provided via spec.json
+// 
+// However, because we're using bitsets we need the length
+// to be defined at compile time.
+//--------------------------------------------------
+constexpr std::size_t WEIGHT_BITS = 8;     // We can quantize down to 4 later
+constexpr std::size_t HISTORY_LENGTH = 24; // We can adjust. Defaulting to current perceptron's length for closer 1-to-1 comparison
+
+
+//-------------------------------------------
+// Map to the O3_CPU instance
+//-------------------------------------------
+std::map<O3_CPU*, Transformer<HISTORY_LENGTH, WEIGHT_BITS>> predictor("spec.json");
+//-------------------------------------------
+// Save the speculative global history.
+// This stores the branch taken / not taken
+// This is used to compare against the actual prediction results.
+//-------------------------------------------
+std::map<O3_CPU*, std::bitset<HISTORY_LENGTH>> spec_global_history;
+std::map<O3_CPU*, std::bitset<HISTORY_LENGTH>> global_history;
+
 } // namespace
+
+
+
 
 void O3_CPU::initialize_branch_predictor() {}
 
-uint8_t O3_CPU::predict_branch(uint64_t ip) { return 1; }
+uint8_t O3_CPU::predict_branch(uint64_t ip) { 
 
-void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type) {}
+  // Get the transformers prediction. It will handle it's own sequence history. 
+  bool prediction = ::predictor[this].predict(ip);
+
+  ::spec_global_history[this] <<= 1;
+  ::spec_global_history[this].set(0, prediction);
+
+  return prediction;
+}
+
+void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type) {
+  
+  // Not sure if we actually need this?
+  // ::global_history[this] <<= 1;
+  // ::global_history[this].set(0, taken);
+
+  // if(prediction != taken){
+  //   // Do back prop
+  // }
+}

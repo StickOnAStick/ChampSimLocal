@@ -86,6 +86,10 @@ public:
 
   virtual ~TransformerBase() = default;
 
+  int get_sequence_len(){
+    return this->sequence_len;
+  }
+
   json loadConfig(const std::string& config_file)
   {
     std::ifstream file(config_file);
@@ -177,14 +181,14 @@ public:
   // Returns vector of [d_in + d_pos, sequence_len] of floating point "binary-vectors" (Only binary values stored in each float)
   // [d_model * sequence_len]
   // The following needs to be updated for dynamic bitset sizing. (Should be this->sequence_len)
-  virtual void hashed_posEncoding(uint64_t& input, std::bitset<24> global_history) = 0;
-  virtual void fixed_posEncoding(uint64_t& ip) = 0;
+  virtual void hashed_posEncoding(uint64_t input) = 0;
+  virtual void fixed_posEncoding(uint64_t ip) = 0;
   //virtual void learnable_posEncoding(uint64_t ip) = 0;
 
   // [seuqnece_len * d_model]  (d_model is == to 96-bit positional ecoding)
-  virtual FixedVector<FixedVector<float>> MMALayer(const FixedVector<FixedVector<float>>& input) = 0;
+  //virtual FixedVector<FixedVector<float>> MMALayer(const FixedVector<FixedVector<float>>& input) = 0;
 
-  // [sequence_len, d_model]
+  // [sequence_len, d_model], inside it transforms to [seq_len, d_k] where d_k = d_model / h. h = number of heads
   virtual FixedVector<FixedVector<float>> MALayer(bool use_mask) = 0;
       // [num_heads, sequence_len, d_(q,k,v)]
 
