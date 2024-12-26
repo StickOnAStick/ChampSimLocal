@@ -1,7 +1,7 @@
 #ifndef FIXED_VECTOR_H
 #define FIXED_VECTOR_H
 
-#include <stdexcept> // Maybe we'll use if model dim is too large??
+#include <stdexcept> // out_of_range() and for future use.
 #include <stdio.h>
 #include <vector>
 
@@ -23,14 +23,14 @@ public:
   {
     if (idx >= vec.size())
       throw std::out_of_range("Index out of bounds. Vec size: " + std::to_string(vec.size()));
-    return vec[vec.size() - idx - 1];
+    return vec[idx];
   }
 
   const T& operator[](size_t idx) const
   {
     if (idx >= vec.size())
       throw std::out_of_range("Index out of bounds");
-    return vec[vec.size() - idx - 1];
+    return vec[idx];
   }
 
   void push(FixedVector<float> new_val)
@@ -43,7 +43,14 @@ public:
       throw std::runtime_error("Cannot push on an empty FixedVector");
     vec.erase(vec.begin());
     vec.push_back(new_val);
-  };
+  }
+
+  size_t size() const { return this->vec.size(); }
+
+  auto begin() { return vec.begin(); }       // Mutable
+  auto end() { return vec.end(); }
+  auto begin() const { return vec.begin(); } // Const
+  auto end() const { return vec.end(); }
 
   size_t size() const {
     return vec.size();
