@@ -370,9 +370,6 @@ std::map<O3_CPU*, Transformer> predictors; // One transformer for every core
 
 
 
-
-
-
 void O3_CPU::initialize_branch_predictor() {
   ::predictors.emplace(this, "spec.json");
 }

@@ -21,11 +21,7 @@ public:
   {
     if (idx >= vec.size())
       throw std::out_of_range("Index out of bounds. Vec size: " + std::to_string(vec.size()));
-<<<<<<< HEAD
     return vec[idx];
-=======
-    return vec[vec.size() - idx - 1];
->>>>>>> 80422cb (Initial UT folder)
   }
 
   const T& operator[](size_t idx) const
@@ -62,10 +58,6 @@ public:
   auto end() { return vec.end(); }
   auto begin() const { return vec.begin(); } // Const
   auto end() const { return vec.end(); }
-
-  size_t size() const {
-    return vec.size();
-  }
 
   // Disable operations that change size
   void push_back(const int&) = delete;
