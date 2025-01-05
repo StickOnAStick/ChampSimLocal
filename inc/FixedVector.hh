@@ -60,6 +60,7 @@ public:
   auto begin() const { return vec.begin(); } // Const
   auto end() const { return vec.end(); }
 
+<<<<<<< HEAD
   size_t size() const {
     return vec.size();
   }
@@ -88,6 +89,8 @@ public:
   auto end() const { return vec.end(); }
 >>>>>>> 65a9dcc (Begin integrating with champsim CPU simulation.)
 
+=======
+>>>>>>> 82e7ab3 (Fixed build issues and integrated transformer into ChampSim O3_CPU)
   // Disable operations that change size
   void push_back(const int&) = delete;
   void emplace_back(int) = delete;
