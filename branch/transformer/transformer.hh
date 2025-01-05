@@ -9,6 +9,8 @@
 
 #include "FixedVector.hh"
 #include <nlohmann/json.hpp> // Nlohmann-json dep
+#include <fmt/chrono.h>
+#include <fmt/core.h>
 
 using json = nlohmann::json;
 
@@ -44,7 +46,12 @@ protected:
   FixedVector<float>              w_out;
   float                           b_out;
 
+  FixedVector<bool>               spec_global_history; // Used for back prop. (seq_len prev. predicitons)
+  // std::deque<state_buf>           hist_state_buf;
+
 public:
+  FixedVector<bool>               global_history;      // The actual branch result provided by ChampSim.
+
   // Construct the transformer from a given input configuration file
   TransformerBase(const std::string& config_file)
   {
@@ -68,8 +75,8 @@ public:
     }
 
     // Setup Sequence history matrix.
-    FixedVector<FixedVector<float>> matrix(sequence_len, FixedVector<float>(d_model, 0)); // Create 2d (d_model x seq_len) matrix of 0's
-    sequence_history = matrix;
+    sequence_history = FixedVector<FixedVector<float>>(sequence_len, FixedVector<float>(d_model, 0.0f));
+    spec_global_history = FixedVector<bool>(sequence_len, false); // Initalize with all not taken
 
     // Setup Weights
     w_q = loadWeights(weights_file, "queries", d_model, d_model);
@@ -78,7 +85,7 @@ public:
     w_o = loadWeights(weights_file, "output", d_model, d_model);
     w_ff1 = loadWeights(weights_file, "w_ff1", d_model, d_ff);
     w_ff2 = loadWeights(weights_file, "w_ff2", d_ff, d_model);
-    b_ff1 = loadWeights(weights_file, "b_ff2", d_ff);
+    b_ff1 = loadWeights(weights_file, "b_ff1", d_ff);
     b_ff2 = loadWeights(weights_file, "b_ff2", d_model);
     w_out = loadWeights(weights_file, "w_out", d_model);
     b_out = loadWeights(weights_file, "b_out");
@@ -86,13 +93,16 @@ public:
 
   virtual ~TransformerBase() = default;
 
-  int get_sequence_len(){
+  int get_seq_len(){
     return this->sequence_len;
   }
 
   json loadConfig(const std::string& config_file)
   {
-    std::ifstream file(config_file);
+    std::string path = __FILE__; // Path to transformer.cc
+    path = path.substr(0, path.find_last_of("/\\"))+"/"+config_file; // Remove /transformer.cc from path
+    
+    std::ifstream file(path);
     if (!file.is_open()) {
       throw std::runtime_error("Could not open config file.");
     }
@@ -106,7 +116,10 @@ public:
     size_t rows,
     size_t cols
   ){
-    std::ifstream file(file_name);
+    std::string path = __FILE__; // Path to transformer.cc
+    path = path.substr(0, path.find_last_of("/\\")) + "/" + file_name; // Remove /transformer.cc from path
+    
+    std::ifstream file(path);
     if(!file.is_open()) {
       throw std::runtime_error("Could not open weights file: " + file_name);
     }
@@ -115,7 +128,7 @@ public:
     const auto& matrix_data = data[weight_key];
 
     if (matrix_data.size() != rows || matrix_data[0].size() != cols){
-      throw std::runtime_error("Mismatch between provided matrix dimensions and loaded weights");
+      throw std::runtime_error("Mismatch between provided matrix dimensions and loaded weights for " + weight_key);
     }
 
     // Generate the matrix from json matrix
@@ -134,7 +147,10 @@ public:
     const std::string& weight_key,
     size_t size
   ){
-    std::ifstream file(file_name);
+    std::string path = __FILE__; // Path to transformer.cc
+    path = path.substr(0, path.find_last_of("/\\")) + "/" + file_name; // Remove /transformer.cc from path
+    
+    std::ifstream file(path);
     if(!file.is_open()) {
       throw std::runtime_error("Could not open weights file: " + file_name);
     }
@@ -143,7 +159,7 @@ public:
     const auto& matrix_data = data[weight_key];
 
     if (matrix_data.size() != size ){
-      throw std::runtime_error("Mismatch between provided matrix dimensions and loaded weights");
+      throw std::runtime_error("Mismatch between provided matrix dimensions and loaded weights for " + weight_key);
     }
 
     // Generate the matrix from json matrix
@@ -159,7 +175,10 @@ public:
     const std::string& file_name,
     const std::string& weight_key
   ){
-    std::ifstream file(file_name);
+    std::string path = __FILE__; // Path to transformer.cc
+    path = path.substr(0, path.find_last_of("/\\")) + "/" + file_name; // Remove /transformer.cc from path
+    
+    std::ifstream file(path);
     if(!file.is_open()) {
       throw std::runtime_error("Could not open weights file: " + file_name);
     }
@@ -171,12 +190,28 @@ public:
     }
 
     try {
-      return data[weight_key].get<float>();
+      if (data[weight_key].is_array()){ // numpy dumps rand floats as arry, Array check/return 
+        return data[weight_key][0].get<float>();
+      } else {
+        return data[weight_key].get<float>();
+      }
     } catch (const json::type_error& e){
       throw std::runtime_error("Invalid type for key: " + weight_key + ". Expected as a float.");
     }
 
   }
+
+  bool get_prediction(uint64_t ip){
+    /*
+      THIS IS NOT FINALIZED.
+
+      The next PR needs to re-work the state buffers and spec/global histories to
+      properly work with back propagation. 
+    */
+    // Gross
+    return false;
+  }
+  
 
   // Returns vector of [d_in + d_pos, sequence_len] of floating point "binary-vectors" (Only binary values stored in each float)
   // [d_model * sequence_len]

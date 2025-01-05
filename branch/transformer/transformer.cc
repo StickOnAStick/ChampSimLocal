@@ -13,19 +13,22 @@
 #include "ooo_cpu.h"
 #include "FixedVector.hh"
 #include "FixedVectorMath.hh"
+#include <fmt/chrono.h>
+#include <fmt/core.h>
 
 
 namespace
 {
-template <std::size_t HISTLEN, std::size_t BITS> // We set the history length and size of weights
 class Transformer : public TransformerBase
 {
 public:
   Transformer(const std::string& config_file) : TransformerBase(config_file) {}
 
   void hashed_posEncoding(uint64_t input) override {
-    uint64_t global_history = 0x121212;
-    uint64_t hashed_input = (input & 0xFFF) ^ global_history; // Use 12 LSBs of IP, smaller locality, reduced HW cost
+    //fmt::println("Positional Encoding: hashed"); // Know where your at when it crashes!
+
+    uint64_t global = 0x121212; // Use the inbuilt global history
+    uint64_t hashed_input = (input & 0xFFF) ^ global; // Use 12 LSBs of IP, smaller locality, reduced HW cost
     
 
     // Positionally encode based off hashed input XOR'd with recent global history
@@ -49,6 +52,8 @@ public:
   }
 
   void fixed_posEncoding(uint64_t ip) override {
+    //fmt::println("Positional Encoding: fixed"); // Know where your at when it crashes!
+
     FixedVector<float> encoded_input(this->d_model, 0.0f);
 
     for(int i = 0; i < this->d_model; i++){
@@ -59,7 +64,7 @@ public:
     this->sequence_history.push(encoded_input);
 
     // Incriment all previous IP's positional encodings by 1
-    for (uint8_t pos = static_cast<uint8_t>(this->sequence_history.size()); pos > 0; --pos) {
+    for (uint8_t pos = static_cast<uint8_t>(this->sequence_history.size())-1; pos > 0; --pos) {
       for (int j = 0; j < this->d_pos; j++) {
         this->sequence_history[pos][this->d_in + j] = (pos >> j) & 1;
       }
@@ -67,6 +72,8 @@ public:
   }
 
   FixedVector<FixedVector<float>> MALayer(bool use_mask = false) override {
+    //fmt::println("MA Layer. masked: {}", use_mask); // Know where your at when it crashes!
+
     /*
       Attention per-head = softMax( QK^T / sqrt(d_k) + M ) V
 
@@ -219,6 +226,7 @@ public:
   }
 
   FixedVector<FixedVector<float>> FFLayer(FixedVector<FixedVector<float>>& input) override {
+    //fmt::println("Feed Forward Layer"); // Know where your at when it crashes!
     /*
       FFN(x) = ReLU(0, xW_1 + b_1)W_2 + b_2
 
@@ -258,6 +266,7 @@ public:
   }
 
   float layerNormalization(FixedVector<FixedVector<float>>& input) override {
+    //fmt::println("Final Layer Normalization");
     /*
       input = [seq_len, d_model]
       out   = [1]
@@ -326,6 +335,8 @@ public:
 
     float out = this->layerNormalization(FF_out);
 
+    this->spec_global_history.push(bool(out)); // Update the speculative history.
+
     return bool(out);
   }
 };
@@ -338,47 +349,54 @@ public:
 // However, because we're using bitsets we need the length
 // to be defined at compile time.
 //--------------------------------------------------
-constexpr std::size_t WEIGHT_BITS = 8;     // We can quantize down to 4 later
-constexpr std::size_t HISTORY_LENGTH = 24; // We can adjust. Defaulting to current perceptron's length for closer 1-to-1 comparison
-
+/* DEPRECATED: Moved inside the transformer itself. Alleviating bitset's constantexpr requirement; however, still uncertain if this is the best approach. */
+//constexpr std::size_t HISTORY_LENGTH = 24; // We can adjust. Defaulting to current perceptron's length for closer 1-to-1 comparison
 
 //-------------------------------------------
 // Map to the O3_CPU instance
 //-------------------------------------------
-std::map<O3_CPU*, Transformer<HISTORY_LENGTH, WEIGHT_BITS>> predictor("spec.json");
+std::map<O3_CPU*, Transformer> predictors; // One transformer for every core
 //-------------------------------------------
 // Save the speculative global history.
 // This stores the branch taken / not taken
 // This is used to compare against the actual prediction results.
+// Note: This is a map because we can do Multi-Core, each O3_CPU instance being a single core with it's own history.
 //-------------------------------------------
-std::map<O3_CPU*, std::bitset<HISTORY_LENGTH>> spec_global_history;
-std::map<O3_CPU*, std::bitset<HISTORY_LENGTH>> global_history;
+/* DEPRECATED: Moved inside the transformer itself. Alleviating bitset's constantexpr requirement; however, still uncertain if this is the best approach. */
+//std::map<O3_CPU*, std::bitset<HISTORY_LENGTH>> global_history; 
 
 } // namespace
 
 
 
 
-void O3_CPU::initialize_branch_predictor() {}
+void O3_CPU::initialize_branch_predictor() {
+  ::predictors.emplace(this, "spec.json");
+}
 
 uint8_t O3_CPU::predict_branch(uint64_t ip) { 
 
   // Get the transformers prediction. It will handle it's own sequence history. 
-  bool prediction = ::predictor[this].predict(ip);
-
-  ::spec_global_history[this] <<= 1;
-  ::spec_global_history[this].set(0, prediction);
+  bool prediction = ::predictors.at(this).predict(ip);
+  //fmt::println("Transformer predicted: {} for ip {}\n", prediction, ip);
 
   return prediction;
 }
 
 void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type) {
   
-  // Not sure if we actually need this?
-  // ::global_history[this] <<= 1;
-  // ::global_history[this].set(0, taken);
+  // We need this, but need to rework it entirely.
+  // fmt::println(
+  //   "Comparing previous prediction results: ip: {}\ttype: {}\tpredicted: {}\tcorrect: {}",
+  //    ip,
+  //    branch_type, 
+  //    ::predictors.at(this).get_prediction(0),
+  //    taken
+  // );
+  // ::predictors.at(this).global_history.push(bool(taken)); // I hate this.
 
   // if(prediction != taken){
   //   // Do back prop
   // }
+  return;
 }
