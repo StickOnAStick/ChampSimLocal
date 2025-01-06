@@ -212,6 +212,25 @@ namespace FixedVectorMath {
        }
     }
 
+    template <typename T>
+    void addCuda(
+        FixedVector<T>&out,
+        const FixedVector<T>& A,
+        const FixedVector<T>& B,
+    );
+
+    template <typename T>
+    void mulCuda(
+        FixedVector<T>&out,
+        const FixedVector<T>& A,
+        const FixedVector<T>& B,
+    );
+
+    template <typename T>
+    void dotProductCuda(
+        const FixedVector<T>& A,
+        const FixedVector<T>& B
+    );
     
 
 }

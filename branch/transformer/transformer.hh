@@ -201,18 +201,6 @@ public:
 
   }
 
-  bool get_prediction(uint64_t ip){
-    /*
-      THIS IS NOT FINALIZED.
-
-      The next PR needs to re-work the state buffers and spec/global histories to
-      properly work with back propagation. 
-    */
-    // Gross
-    return false;
-  }
-  
-
   // Returns vector of [d_in + d_pos, sequence_len] of floating point "binary-vectors" (Only binary values stored in each float)
   // [d_model * sequence_len]
   // The following needs to be updated for dynamic bitset sizing. (Should be this->sequence_len)
