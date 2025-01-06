@@ -9,6 +9,8 @@ bin/
 **/*.o
 **/*.d
 
+**/*.xz
+
 .vscode/
 
 test/000-test-main
