@@ -3,11 +3,19 @@ ROOT_DIR = $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 CPPFLAGS += -MMD -I$(ROOT_DIR)/inc
 CXXFLAGS += --std=c++17 -O3 -Wall -Wextra -Wshadow -Wpedantic
 
+#CUDA 
+# If nvcc isn’t on PATH, replace with the full path to nvcc
+NVCC       ?= nvcc
+# NVCCFLAGS are sinmilar to CXXFlags but for cuda
+NVCCFLAGS ?= -arch=sm_75 -std=c++17 -O3 -Xcompiler -Wall -Xcompiler -Wextra
+# -arch=sm_75 is an example for Turing GPUs (adjust for your GPU).
+
 # vcpkg integration
 TRIPLET_DIR = $(patsubst %/,%,$(firstword $(filter-out $(ROOT_DIR)/vcpkg_installed/vcpkg/, $(wildcard $(ROOT_DIR)/vcpkg_installed/*/))))
 CPPFLAGS += -isystem $(TRIPLET_DIR)/include
-LDFLAGS  += -L$(TRIPLET_DIR)/lib -L$(TRIPLET_DIR)/lib/manual-link
-LDLIBS   += -llzma -lz -lbz2 -lfmt
+LDFLAGS  += -L$(TRIPLET_DIR)/lib -L$(TRIPLET_DIR)/lib/manual-link -L/usr/local/cuda/lib64 # CUDA Lib include.
+LDLIBS   += -llzma -lz -lbz2 -lfmt -lcudart # Cudart is CUDA!
+
 
 .phony: all all_execs clean configclean test makedirs
 
