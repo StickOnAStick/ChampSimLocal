@@ -14,8 +14,12 @@ private:
   std::vector<T> vec;
 
 public:
-  FixedVector() : vec() {}
-  explicit FixedVector(size_t size, T default_value = T()) : vec(size, default_value) {}
+  // Default (needed for nested FixedVectors or delayed init)
+  FixedVector() : vec(0) {}
+
+  // Fixed size constructor
+  explicit FixedVector(size_t size) : vec(size) {};
+  explicit FixedVector(size_t size, T default_value = T{}) : vec(size, default_value) {};
 
   T& operator[](std::size_t idx)
   {
