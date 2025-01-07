@@ -6,11 +6,11 @@
 #include <string>
 #include <vector>
 #include <bitset>
+#include <fmt/chrono.h>
+#include <fmt/core.h>
 
 #include "FixedVector.hh"
 #include <nlohmann/json.hpp> // Nlohmann-json dep
-#include <fmt/chrono.h>
-#include <fmt/core.h>
 
 using json = nlohmann::json;
 

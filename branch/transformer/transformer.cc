@@ -7,14 +7,16 @@
 #include <deque>
 #include <map>
 #include <random>
-
-#include "FixedVector.hh"
-#include "msl/fwcounter.h"
-#include "ooo_cpu.h"
-#include "FixedVector.hh"
-#include "FixedVectorMath.hh"
 #include <fmt/chrono.h>
 #include <fmt/core.h>
+
+#include  "FixedVectorMath.hh"
+
+
+#include "msl/fwcounter.h"
+#include "ooo_cpu.h"
+
+#include "FixedVector.hh"
 
 
 namespace

@@ -221,8 +221,6 @@ namespace FixedVectorMath {
        }
     }
 
-    
-
 }
 
 #endif // FIXED_VECTOR_MATH_H
