@@ -73,6 +73,13 @@ def main():
     num_heads = int(sys.argv[3])
     d_ff = int(sys.argv[4])
     
+    print(f"""
+    ----- Creating Transformer -----
+        d_model:   {d_model}
+        d_ff:      {d_ff}
+        num_heads: {num_heads}
+    """)
+
     # Create the JSON file
     create_json_file(file_name, d_model, num_heads, d_ff)
 

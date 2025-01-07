@@ -9,6 +9,14 @@ bin/
 **/*.o
 **/*.d
 
+# Ignore all transformer weights except the spec.json
+branch/transformer/**/*.json
+!branch/transformer/spec.json
+# Ignore all trace files
+**/*.xz
+
+.vscode/
+
 test/000-test-main
 
 tracer/pin/obj-intel64/

@@ -43,7 +43,9 @@ namespace FixedVectorMath {
         T magnitude = std::sqrt(sum_of_squares);
         
         if (magnitude == 0) {
-            throw std::runtime_error("Cannot normalize a vector with zero magnitude.");
+            // This occurs when mag < 1e-12 OR when starting the BP
+            return;
+            //throw std::runtime_error("Cannot normalize a vector with zero magnitude.");
         }
 
         for (std::size_t i = 0; i < vec.size(); i++) {
@@ -64,10 +66,11 @@ namespace FixedVectorMath {
     template <typename T>
     FixedVector<FixedVector<T>> dotProduct(const FixedVector<FixedVector<T>>& A, const FixedVector<FixedVector<T>>& B) {
         size_t rowsA = A.size();
+        size_t rowsB = B.size();
         size_t colsA = A[0].size();
         size_t colsB = B[0].size();
 
-        if (rowsA != colsB){
+        if (colsA != rowsB){ // [a, n] * [n, b] is only valid solution
             throw std::invalid_argument("Rows of matrix A does not match Cols of matrix B");
         }
 
@@ -96,7 +99,7 @@ namespace FixedVectorMath {
         
         FixedVector<FixedVector<T>> res(A.size(), FixedVector<T>(B[0].size(), static_cast<T>(0)));
         for(size_t rows = 0; rows < A.size(); ++rows){
-            for(size_t cols = 0; cols < B.size(); ++cols){
+            for(size_t cols = 0; cols < B[0].size(); ++cols){
                 for(size_t m = 0; m < A[0].size(); ++m){
                     res[rows][cols]+= A[rows][m] * B[m][cols];
                 }
@@ -193,7 +196,7 @@ namespace FixedVectorMath {
         if(A.size() != B.size())
             throw std::invalid_argument("Matricies cannot be of different sizes!");
 
-        auto *b_it = B.begin();
+        auto b_it = B.begin();
         for (FixedVector<T>& a : A){
             FixedVectorMath::add(a, *b_it);
             ++b_it;
@@ -217,8 +220,6 @@ namespace FixedVectorMath {
         }
        }
     }
-
-    
 
 }
 

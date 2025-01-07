@@ -29,7 +29,7 @@ public:
     return vec[idx];
   }
 
-  void push(FixedVector<float> new_val)
+  void push(FixedVector<T> new_val)
   {
     /*
       Places new value at the front, moves all other elements
@@ -41,13 +41,21 @@ public:
     vec.push_back(new_val);
   }
 
-  size_t size() { return vec.size(); }
-  size_t size() const { return vec.size(); }
+  void push(T input){
+    if(vec.size() == 0)
+      throw std::runtime_error("Cannot push element into vector of size 0!");
+    vec.erase(vec.begin());
+    vec.push_back(input);
+  }
+
+  auto size() { return vec.size(); }
+  auto size() const { return this->vec.size(); }
+  auto data() { return this->vec.data();}
 
   auto begin() { return vec.begin(); }
   auto end() { return vec.end(); }
-  auto begin() const { return vec.begin(); } // Const version
-  auto end() const { return vec.end(); }     // Const version
+  auto begin() const { return vec.begin(); } // Const
+  auto end() const { return vec.end(); }
 
   // Disable operations that change size
   void push_back(const int&) = delete;
