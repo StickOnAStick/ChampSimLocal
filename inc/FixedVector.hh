@@ -12,18 +12,18 @@ private:
   std::vector<T> vec;
 
 public:
-  FixedVector() : vec() {}
-  explicit FixedVector(size_t size, T default_value = T()) : vec(size, default_value) {}
+  // Default (needed for nested FixedVectors or delayed init)
+  FixedVector() : vec(0) {}
+
+  // Fixed size constructor
+  explicit FixedVector(size_t size) : vec(size) {};
+  explicit FixedVector(size_t size, T default_value = T{}) : vec(size, default_value) {};
 
   T& operator[](std::size_t idx)
   {
     if (idx >= vec.size())
       throw std::out_of_range("Index out of bounds. Vec size: " + std::to_string(vec.size()));
-<<<<<<< HEAD
     return vec[idx];
-=======
-    return vec[vec.size() - idx - 1];
->>>>>>> 80422cb (Initial UT folder)
   }
 
   const T& operator[](size_t idx) const
@@ -54,43 +54,13 @@ public:
 
   auto size() { return vec.size(); }
   auto size() const { return this->vec.size(); }
+  auto data() { return this->vec.data();}
 
-  auto begin() { return vec.begin(); }       // Mutable
+  auto begin() { return vec.begin(); }
   auto end() { return vec.end(); }
   auto begin() const { return vec.begin(); } // Const
   auto end() const { return vec.end(); }
 
-<<<<<<< HEAD
-  size_t size() const {
-    return vec.size();
-  }
-
-  typename std::vector<T>::iterator begin() {
-    return vec.begin();
-  }
-
-  typename std::vector<T>::iterator end() {
-    return vec.end();
-  }
-
-  typename std::vector<T>::const_iterator begin() const {
-    return vec.begin();
-  }
-
-  typename std::vector<T>::const_iterator end() const {
-    return vec.end();
-  }
-=======
-  size_t size() const { return this->vec.size(); }
-
-  auto begin() { return vec.begin(); }       // Mutable
-  auto end() { return vec.end(); }
-  auto begin() const { return vec.begin(); } // Const
-  auto end() const { return vec.end(); }
->>>>>>> 65a9dcc (Begin integrating with champsim CPU simulation.)
-
-=======
->>>>>>> 82e7ab3 (Fixed build issues and integrated transformer into ChampSim O3_CPU)
   // Disable operations that change size
   void push_back(const int&) = delete;
   void emplace_back(int) = delete;
