@@ -53,6 +53,7 @@ public:
   }
 
   auto size() const { return this->vec.size(); }
+  auto data() { return this->vec.data(); }
 
   auto begin() { return vec.begin(); }       // Mutable
   auto end() { return vec.end(); }

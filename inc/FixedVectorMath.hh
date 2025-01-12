@@ -132,7 +132,11 @@ namespace FixedVectorMath {
         const FixedVector<FixedVector<T>>& A, 
         const FixedVector<FixedVector<T>>& B
     ){
-        if (A.size() != B.size() || A.size() != out.size())
+        /**
+         * Element Wise Multiplication - Hadmard Product
+         */
+
+        if (A[0].size() != B.size() || A.size() != out.size())
             throw std::invalid_argument("Size mismatch between out = A*B matricies.");
         
         for(size_t i = 0; i  < A.size(); ++i){
@@ -214,22 +218,54 @@ namespace FixedVectorMath {
 
     template <typename T>
     void addCuda(
-        FixedVector<T>&out,
+        FixedVector<T>& out,
         const FixedVector<T>& A,
-        const FixedVector<T>& B,
+        const FixedVector<T>& B
+    );
+    
+    template <typename T>
+    void addCuda(
+        FixedVector<FixedVector<T>>& out,
+        const FixedVector<FixedVector<T>>& A,
+        const FixedVector<FixedVector<T>>& B
     );
 
     template <typename T>
     void mulCuda(
-        FixedVector<T>&out,
+        FixedVector<T>& out,
         const FixedVector<T>& A,
-        const FixedVector<T>& B,
+        const FixedVector<T>& B
+    );
+
+    template <typename T>
+    void mulCuda(
+        FixedVector<FixedVector<T>>& out,    
+        const FixedVector<FixedVector<T>>& A,
+        const FixedVector<FixedVector<T>>& B
     );
 
     template <typename T>
     void dotProductCuda(
+        /* RESULT STORED IN A */
         const FixedVector<T>& A,
         const FixedVector<T>& B
+    );
+
+    template <typename T>
+    void dotProductCuda(
+        FixedVector<FixedVector<T>>& out,
+        const FixedVector<FixedVector<T>>& A,
+        const FixedVector<FixedVector<T>>& B
+    );
+
+    template <typename T>
+    void softmaxCuda(
+        FixedVector<T>& A
+    );
+
+    template <typename T>
+    void softmaxCuda(
+        FixedVector<FixedVector<T>>& A
     );
     
 
