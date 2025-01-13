@@ -14,6 +14,12 @@
 
 using json = nlohmann::json;
 
+struct Prediction {
+  uint64_t  ip;
+  uint8_t   pred; // Treat as boolean
+  
+};
+
 class TransformerBase
 {
 protected:
@@ -46,11 +52,12 @@ protected:
   FixedVector<float>              w_out;
   float                           b_out;
 
-  FixedVector<bool>               spec_global_history; // Used for back prop. (seq_len prev. predicitons)
   // std::deque<state_buf>           hist_state_buf;
 
 public:
-  FixedVector<bool>               global_history;      // The actual branch result provided by ChampSim.
+  FixedVector<uint8_t>               global_history;      // The actual branch result provided by ChampSim.
+  FixedVector<uint8_t>               spec_global_history; // Used for back prop. (seq_len prev. predicitons)
+
 
   // Construct the transformer from a given input configuration file
   TransformerBase(const std::string& config_file)
@@ -200,18 +207,6 @@ public:
     }
 
   }
-
-  bool get_prediction(uint64_t ip){
-    /*
-      THIS IS NOT FINALIZED.
-
-      The next PR needs to re-work the state buffers and spec/global histories to
-      properly work with back propagation. 
-    */
-    // Gross
-    return false;
-  }
-  
 
   // Returns vector of [d_in + d_pos, sequence_len] of floating point "binary-vectors" (Only binary values stored in each float)
   // [d_model * sequence_len]

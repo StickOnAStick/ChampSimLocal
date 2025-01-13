@@ -210,6 +210,8 @@ namespace FixedVectorMath {
         return in;
     }
     // Not templating :>
+    // 
+    // "Fuck you" ~My future self
     void relu(FixedVector<FixedVector<float>>& A){
         /*
             In-place relu of 2D mat

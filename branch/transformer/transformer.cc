@@ -343,37 +343,35 @@ public:
   }
 };
 
-
-//--------------------------------------------------
-// Note, the actual transformer uses it's internal 
-// sequence_len / d_model provided via spec.json
-// 
-// However, because we're using bitsets we need the length
-// to be defined at compile time.
-//--------------------------------------------------
-/* DEPRECATED: Moved inside the transformer itself. Alleviating bitset's constantexpr requirement; however, still uncertain if this is the best approach. */
-//constexpr std::size_t HISTORY_LENGTH = 24; // We can adjust. Defaulting to current perceptron's length for closer 1-to-1 comparison
+// Arbitrarily set to the same # of entries as perceptron. Space limitations require careful consideration of this value.
+constexpr std::size_t NUM_UPDATE_ENTRIES = 100; // Size of the buffer for keeping 'perceptron_state' for update
 
 //-------------------------------------------
 // Map to the O3_CPU instance
+//
+// Multi-Core tests will have their own O3_CPU instance
 //-------------------------------------------
-std::map<O3_CPU*, Transformer> predictors; // One transformer for every core
+std::map<O3_CPU*, Transformer> predictors;
 //-------------------------------------------
-// Save the speculative global history.
-// This stores the branch taken / not taken
-// This is used to compare against the actual prediction results.
-// Note: This is a map because we can do Multi-Core, each O3_CPU instance being a single core with it's own history.
+// Store Speculative and Global branch histories
+//
+// Note: Vector of bools operates similar to a dynamic bitset
 //-------------------------------------------
-/* DEPRECATED: Moved inside the transformer itself. Alleviating bitset's constantexpr requirement; however, still uncertain if this is the best approach. */
-//std::map<O3_CPU*, std::bitset<HISTORY_LENGTH>> global_history; 
+std::map<O3_CPU*, std::vector<bool>> global_history;          // What actually happened
+std::map<O3_CPU*, std::vector<bool>> spec_global_history;     // What we think happened
+//-------------------------------------------
+// Store state for later training 
+//-------------------------------------------
+std::map<O3_CPU*, std::deque<Prediction>> prediction_state_buf;
 
 } // namespace
 
 
-
-
 void O3_CPU::initialize_branch_predictor() {
   ::predictors.emplace(this, "spec.json");
+  int seq_len = ::predictors.at(this).get_seq_len();
+  ::global_history = std::vector<bool>(seq_len, 0);
+  ::spec_global_history = std::vector<bool>(seq_len, 0);
 }
 
 uint8_t O3_CPU::predict_branch(uint64_t ip) { 
