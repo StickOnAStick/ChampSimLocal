@@ -14,12 +14,6 @@
 
 using json = nlohmann::json;
 
-struct Prediction {
-  uint64_t  ip;
-  uint8_t   pred; // Treat as boolean
-  
-};
-
 class TransformerBase
 {
 protected:
@@ -52,12 +46,7 @@ protected:
   FixedVector<float>              w_out;
   float                           b_out;
 
-  // std::deque<state_buf>           hist_state_buf;
-
 public:
-  FixedVector<uint8_t>               global_history;      // The actual branch result provided by ChampSim.
-  FixedVector<uint8_t>               spec_global_history; // Used for back prop. (seq_len prev. predicitons)
-
 
   // Construct the transformer from a given input configuration file
   TransformerBase(const std::string& config_file)
@@ -83,7 +72,6 @@ public:
 
     // Setup Sequence history matrix.
     sequence_history = FixedVector<FixedVector<float>>(sequence_len, FixedVector<float>(d_model, 0.0f));
-    spec_global_history = FixedVector<bool>(sequence_len, false); // Initalize with all not taken
 
     // Setup Weights
     w_q = loadWeights(weights_file, "queries", d_model, d_model);
@@ -219,7 +207,7 @@ public:
   //virtual FixedVector<FixedVector<float>> MMALayer(const FixedVector<FixedVector<float>>& input) = 0;
 
   // [sequence_len, d_model], inside it transforms to [seq_len, d_k] where d_k = d_model / h. h = number of heads
-  virtual FixedVector<FixedVector<float>> MALayer(bool use_mask) = 0;
+  virtual FixedVector<FixedVector<float>> MALayer(bool use_mask, ForwardContext& ctx) = 0;
       // [num_heads, sequence_len, d_(q,k,v)]
 
   // Input: [sequence_len, d_model]
@@ -227,5 +215,7 @@ public:
   virtual FixedVector<FixedVector<float>> FFLayer(FixedVector<FixedVector<float>>& input) = 0;
   virtual float layerNormalization(FixedVector<FixedVector<float>>& input) = 0;
 
-  virtual bool predict(uint64_t input) = 0; // Final output, branch taken, or not
+  virtual float predict(uint64_t input, ForwardContext& ctx) = 0; // Final output, branch taken, or not
+
+  virtual void backProp() = 0;
 };

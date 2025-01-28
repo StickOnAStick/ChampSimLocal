@@ -73,7 +73,7 @@ public:
     }
   }
 
-  FixedVector<FixedVector<float>> MALayer(bool use_mask = false) override {
+  FixedVector<FixedVector<float>> MALayer(bool use_mask = false, ForwardContext& ctx) override {
     //fmt::println("MA Layer. masked: {}", use_mask); // Know where your at when it crashes!
 
     /*
@@ -310,7 +310,7 @@ public:
     return out;
   }
 
-  bool predict(uint64_t ip){
+  float predict(uint64_t ip, ForwardContext& ctx) override {
 
     /*
       Positional Encoding
@@ -326,21 +326,54 @@ public:
     */
     FixedVector<FixedVector<float>> MMA_out = this->MALayer(true);
     FixedVectorMath::add(MMA_out, this->sequence_history); // Result stored in MMA_Out
-    FixedVectorMath::normalize(MMA_out);
+    FixedVectorMath::normalize(MMA_out); // Store mean and variance for back prop
 
     /*
       Feed-Forward Layer
     */
     FixedVector<FixedVector<float>> FF_out = this->FFLayer(MMA_out);
     FixedVectorMath::add(FF_out, MMA_out);
-    FixedVectorMath::normalize(FF_out);
+    FixedVectorMath::normalize(FF_out); // Store mean and variance for back prop
 
     float out = this->layerNormalization(FF_out);
 
-    this->spec_global_history.push(bool(out)); // Update the speculative history.
-
-    return bool(out);
+    return out;
   }
+};
+
+struct Prediction {
+  uint64_t  ip;
+  bool   prediction;
+  float  output;      // Probability given for the prediction
+  std::vector<bool> history;
+};
+
+struct ForwardContext {
+  // Memoization of forward pass for fast backwards pass 
+
+  // MMA Attention Intermediate results - Q, K, V = [seq_len, d_model]
+  FixedVector<FixedVector<float>> Q;
+  FixedVector<FixedVector<float>> K;
+  FixedVector<FixedVector<float>> V;
+  FixedVector<FixedVector<float>> attention_scores;
+  FixedVector<FixedVector<float>> attention_out; // Prior to W_O
+  FixedVector<FixedVector<float>> attn_projected; // After W_O
+
+  // Post attention Residual + norm
+  FixedVector<FixedVector<float>> attention_residual;
+
+  // Feed Forward
+  FixedVector<FixedVector<float>> ff_pre_activation; // in * w_ff1 + b_ff1 (before ReLU, sigmoid, etc)
+  FixedVector<FixedVector<float>> ff_hidden;         // after activation
+  FixedVector<FixedVector<float>> ff_out;            // after second linear
+
+  // Post FF residual + norm
+  FixedVector<FixedVector<float>> ff_residual;
+
+  // Final Pooling + logits 
+  FixedVector<float> pooled; // [d_model]
+  float logits;
+  float output;    
 };
 
 // Arbitrarily set to the same # of entries as perceptron. Space limitations require careful consideration of this value.
@@ -353,7 +386,7 @@ constexpr std::size_t NUM_UPDATE_ENTRIES = 100; // Size of the buffer for keepin
 //-------------------------------------------
 std::map<O3_CPU*, Transformer> predictors;
 //-------------------------------------------
-// Store Speculative and Global branch histories
+// Store Speculative and Global branch histories of predicitons.
 //
 // Note: Vector of bools operates similar to a dynamic bitset
 //-------------------------------------------
@@ -362,7 +395,7 @@ std::map<O3_CPU*, std::vector<bool>> spec_global_history;     // What we think h
 //-------------------------------------------
 // Store state for later training 
 //-------------------------------------------
-std::map<O3_CPU*, std::deque<Prediction>> prediction_state_buf;
+std::map<O3_CPU*, std::deque<ForwardContext>> prediction_state_buf;
 
 } // namespace
 
@@ -370,14 +403,29 @@ std::map<O3_CPU*, std::deque<Prediction>> prediction_state_buf;
 void O3_CPU::initialize_branch_predictor() {
   ::predictors.emplace(this, "spec.json");
   int seq_len = ::predictors.at(this).get_seq_len();
-  ::global_history = std::vector<bool>(seq_len, 0);
-  ::spec_global_history = std::vector<bool>(seq_len, 0);
+  ::global_history.at(this) = std::vector<bool>(seq_len, 0);
+  ::spec_global_history.at(this) = std::vector<bool>(seq_len, 0);
 }
 
 uint8_t O3_CPU::predict_branch(uint64_t ip) { 
 
-  // Get the transformers prediction. It will handle it's own sequence history. 
-  bool prediction = ::predictors.at(this).predict(ip);
+
+  ::ForwardContext ctx = {};
+
+  // Get the transformers prediction. 
+  float output = ::predictors.at(this).predict(ip, &ctx);
+  bool prediction = output > 0.5; // Threshold
+
+  // Record the prediction and current state of the transformer which led to this prediction
+  ::prediction_state_buf.at(this).push_back({ip, prediction, ::spec_global_history.at(this) });
+  if(::prediction_state_buf.at(this).size() > ::NUM_UPDATE_ENTRIES)
+    ::prediction_state_buf.at(this).pop_front();
+  
+  ::spec_global_history.at(this).push_back(prediction);
+  if (::spec_global_history.at(this).size() > ::predictors.at(this).get_seq_len())
+    ::spec_global_history.at(this).erase(::spec_global_history.at(this).begin());
+
+
   //fmt::println("Transformer predicted: {} for ip {}\n", prediction, ip);
 
   return prediction;
@@ -385,18 +433,22 @@ uint8_t O3_CPU::predict_branch(uint64_t ip) {
 
 void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type) {
   
-  // We need this, but need to rework it entirely.
-  // fmt::println(
-  //   "Comparing previous prediction results: ip: {}\ttype: {}\tpredicted: {}\tcorrect: {}",
-  //    ip,
-  //    branch_type, 
-  //    ::predictors.at(this).get_prediction(0),
-  //    taken
-  // );
-  // ::predictors.at(this).global_history.push(bool(taken)); // I hate this.
+  auto state = std::find_if(
+    std::begin(::prediction_state_buf.at(this)), 
+    std::end(::prediction_state_buf.at(this)), 
+    [ip](const ::Prediction& x) { return x.ip == ip; }
+  );
+  if (state == std::end(::prediction_state_buf.at(this)))
+    return; // Skip update. State was lost.
+  
+  auto [_ip, prediction, history] = *state;
+  ::prediction_state_buf.at(this).erase(state);
 
-  // if(prediction != taken){
-  //   // Do back prop
-  // }
+  ::global_history.at(this).push_back(taken);
+  if (::global_history.at(this).size() > ::predictors.at(this).get_seq_len())
+    ::global_history.at(this).erase(::global_history.at(this).begin());
+  
+
+
   return;
 }
