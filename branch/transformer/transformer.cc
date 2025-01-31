@@ -27,11 +27,9 @@ public:
   Transformer(const std::string& config_file) : TransformerBase(config_file) {}
 
   void hashed_posEncoding(uint64_t input) override {
-    //fmt::println("Positional Encoding: hashed"); // Know where your at when it crashes!
 
-    uint64_t global = 0x121212; // Use the inbuilt global history
+    uint64_t global = 0x121212; // Use global_history
     uint64_t hashed_input = (input & 0xFFF) ^ global; // Use 12 LSBs of IP, smaller locality, reduced HW cost
-    
 
     // Positionally encode based off hashed input XOR'd with recent global history
     uint8_t pos_enc = (hashed_input % static_cast<int>(pow(2, this->d_pos))); // Reduce to 5 bits.
@@ -348,53 +346,25 @@ struct Prediction {
   std::vector<bool> history;
 };
 
-struct ForwardContext {
-  // Memoization of forward pass for fast backwards pass 
-
-  // MMA Attention Intermediate results - Q, K, V = [seq_len, d_model]
-  FixedVector<FixedVector<float>> Q;
-  FixedVector<FixedVector<float>> K;
-  FixedVector<FixedVector<float>> V;
-  FixedVector<FixedVector<float>> attention_scores;
-  FixedVector<FixedVector<float>> attention_out; // Prior to W_O
-  FixedVector<FixedVector<float>> attn_projected; // After W_O
-
-  // Post attention Residual + norm
-  FixedVector<FixedVector<float>> attention_residual;
-
-  // Feed Forward
-  FixedVector<FixedVector<float>> ff_pre_activation; // in * w_ff1 + b_ff1 (before ReLU, sigmoid, etc)
-  FixedVector<FixedVector<float>> ff_hidden;         // after activation
-  FixedVector<FixedVector<float>> ff_out;            // after second linear
-
-  // Post FF residual + norm
-  FixedVector<FixedVector<float>> ff_residual;
-
-  // Final Pooling + logits 
-  FixedVector<float> pooled; // [d_model]
-  float logits;
-  float output;    
-};
-
-// Arbitrarily set to the same # of entries as perceptron. Space limitations require careful consideration of this value.
 constexpr std::size_t NUM_UPDATE_ENTRIES = 100; // Size of the buffer for keeping 'perceptron_state' for update
+// Arbitrarily set to the same # of entries as perceptron. Space limitations require careful consideration of this value.
 
-//-------------------------------------------
-// Map to the O3_CPU instance
-//
-// Multi-Core tests will have their own O3_CPU instance
-//-------------------------------------------
+
+/*
+  Map to the O3_CPU instance
+  Multi-Core tests will have their own O3_CPU instance
+*/
 std::map<O3_CPU*, Transformer> predictors;
-//-------------------------------------------
-// Store Speculative and Global branch histories of predicitons.
-//
-// Note: Vector of bools operates similar to a dynamic bitset
-//-------------------------------------------
+/*
+  Store Speculative and Global branch histories of predicitons.
+  Note: Vector of bools operates similar to a dynamic bitset
+*/
 std::map<O3_CPU*, std::vector<bool>> global_history;          // What actually happened
 std::map<O3_CPU*, std::vector<bool>> spec_global_history;     // What we think happened
-//-------------------------------------------
-// Store state for later training 
-//-------------------------------------------
+
+/*
+  Memoize the Forward pass results for faster backprop. 
+*/
 std::map<O3_CPU*, std::deque<ForwardContext>> prediction_state_buf;
 
 } // namespace
@@ -409,11 +379,13 @@ void O3_CPU::initialize_branch_predictor() {
 
 uint8_t O3_CPU::predict_branch(uint64_t ip) { 
 
+  int d_model = ::predictors.at(this).get_d_model();
+  int seq_len = ::predictors.at(this).get_seq_len();
 
-  ::ForwardContext ctx = {};
+  ForwardContext ctx = ForwardContext(seq_len, d_model);
 
   // Get the transformers prediction. 
-  float output = ::predictors.at(this).predict(ip, &ctx);
+  float output = ::predictors.at(this).predict(ip, ctx);
   bool prediction = output > 0.5; // Threshold
 
   // Record the prediction and current state of the transformer which led to this prediction

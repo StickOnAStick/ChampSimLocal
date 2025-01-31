@@ -14,6 +14,66 @@
 
 using json = nlohmann::json;
 
+struct ForwardContext {
+  // Memoization of forward pass for fast backward pass 
+
+  // MMA Attention Intermediate results - Q, K, V = [seq_len, d_model]
+  FixedVector<FixedVector<float>> Q;
+  FixedVector<FixedVector<float>> K;
+  FixedVector<FixedVector<float>> V;
+  FixedVector<FixedVector<float>> scaled_attn_scores; // QK^T / sqrt(d_k)
+  FixedVector<FixedVector<float>> softmax_attn;       // Softmax(QK^T / sqrt(d_k))
+  FixedVector<FixedVector<float>> attention_scores;   // [seq_len, seq_len]
+  FixedVector<FixedVector<float>> attention_out;      // Before W_O
+  FixedVector<FixedVector<float>> attn_projected;     // After W_O
+
+  // Post attention Residual + norm
+  FixedVector<FixedVector<float>> pre_attention_layernorm; // LayerNorm input
+  FixedVector<FixedVector<float>> attention_residual;
+
+  // Feed Forward
+  FixedVector<FixedVector<float>> ff_pre_activation;  // in * w_ff1 + b_ff1 (before activation)
+  FixedVector<FixedVector<float>> ff_hidden;         // after activation
+  FixedVector<FixedVector<float>> ff1_bias_out;      // (optional) after first linear + bias
+  FixedVector<FixedVector<float>> ff_out;           // after second linear
+
+  // Post FF residual + norm
+  FixedVector<FixedVector<float>> pre_ff_layernorm; // LayerNorm input
+  FixedVector<FixedVector<float>> ff_residual;
+
+  // Final Pooling + logits 
+  FixedVector<float> pooled; // [d_model]
+  float logits;
+  float output;    
+
+  // Optional: LayerNorm parameters (might use later)
+  FixedVector<float> layernorm_gamma; 
+  FixedVector<float> layernorm_beta;
+
+  // Meaningful default constructor -- Be considerate when changing d_model, seq_len 
+  ForwardContext(size_t seq_len = 24, size_t d_model = 70) 
+      : Q(seq_len, FixedVector<float>(d_model, 0.0f)),
+        K(seq_len, FixedVector<float>(d_model, 0.0f)),
+        V(seq_len, FixedVector<float>(d_model, 0.0f)),
+        scaled_attn_scores(seq_len, FixedVector<float>(seq_len, 0.0f)),
+        softmax_attn(seq_len, FixedVector<float>(seq_len, 0.0f)),
+        attention_scores(seq_len, FixedVector<float>(seq_len, 0.0f)),
+        attention_out(seq_len, FixedVector<float>(d_model, 0.0f)),
+        attn_projected(seq_len, FixedVector<float>(d_model, 0.0f)),
+        pre_attention_layernorm(seq_len, FixedVector<float>(d_model, 0.0f)),
+        attention_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_pre_activation(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_hidden(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff1_bias_out(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_out(seq_len, FixedVector<float>(d_model, 0.0f)),
+        pre_ff_layernorm(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
+        pooled(d_model, 0.0f),
+        layernorm_gamma(d_model, 0.0f),
+        layernorm_beta(d_model, 0.0f) {}
+};
+
+
 class TransformerBase
 {
 protected:
@@ -92,10 +152,14 @@ public:
     return this->sequence_len;
   }
 
+  int get_d_model(){
+    return this->d_model;
+  }
+
   json loadConfig(const std::string& config_file)
   {
-    std::string path = __FILE__; // Path to transformer.cc
-    path = path.substr(0, path.find_last_of("/\\"))+"/"+config_file; // Remove /transformer.cc from path
+    std::string path = __FILE__; // Path to transformer.hh
+    path = path.substr(0, path.find_last_of("/\\"))+"/"+config_file; // Remove /transformer.hh from path & append config_file
     
     std::ifstream file(path);
     if (!file.is_open()) {
@@ -111,8 +175,11 @@ public:
     size_t rows,
     size_t cols
   ){
-    std::string path = __FILE__; // Path to transformer.cc
-    path = path.substr(0, path.find_last_of("/\\")) + "/" + file_name; // Remove /transformer.cc from path
+    /*
+      Matrix Weights
+    */
+    std::string path = __FILE__; // Path to transformer.hh
+    path = path.substr(0, path.find_last_of("/\\")) + "/" + file_name; // Remove /transformer.hh from path
     
     std::ifstream file(path);
     if(!file.is_open()) {
@@ -142,8 +209,11 @@ public:
     const std::string& weight_key,
     size_t size
   ){
-    std::string path = __FILE__; // Path to transformer.cc
-    path = path.substr(0, path.find_last_of("/\\")) + "/" + file_name; // Remove /transformer.cc from path
+    /*
+      1d weights
+    */
+    std::string path = __FILE__; // Path to transformer.hh
+    path = path.substr(0, path.find_last_of("/\\")) + "/" + file_name; // Remove /transformer.hh from path
     
     std::ifstream file(path);
     if(!file.is_open()) {
@@ -170,6 +240,9 @@ public:
     const std::string& file_name,
     const std::string& weight_key
   ){
+    /*
+      Scalar weights
+    */
     std::string path = __FILE__; // Path to transformer.cc
     path = path.substr(0, path.find_last_of("/\\")) + "/" + file_name; // Remove /transformer.cc from path
     
@@ -196,24 +269,18 @@ public:
 
   }
 
-  // Returns vector of [d_in + d_pos, sequence_len] of floating point "binary-vectors" (Only binary values stored in each float)
-  // [d_model * sequence_len]
-  // The following needs to be updated for dynamic bitset sizing. (Should be this->sequence_len)
-  virtual void hashed_posEncoding(uint64_t input) = 0;
-  virtual void fixed_posEncoding(uint64_t ip) = 0;
+  // Positional encodings
+  virtual void hashed_posEncoding(uint64_t input) = 0; // [seq_len, d_model]
+  virtual void fixed_posEncoding(uint64_t ip) = 0;     // [seq_len, d_model]
   //virtual void learnable_posEncoding(uint64_t ip) = 0;
 
-  // [seuqnece_len * d_model]  (d_model is == to 96-bit positional ecoding)
-  //virtual FixedVector<FixedVector<float>> MMALayer(const FixedVector<FixedVector<float>>& input) = 0;
+  // Attention
+  virtual FixedVector<FixedVector<float>> MALayer(bool use_mask, ForwardContext& ctx) = 0; // [seq_len, d_model]
+      // Head Dimensions:
+      // [sequence_len, d_k], where d_k is d_model / h so long as d_model % h == 0 and h is the number of heads 
 
-  // [sequence_len, d_model], inside it transforms to [seq_len, d_k] where d_k = d_model / h. h = number of heads
-  virtual FixedVector<FixedVector<float>> MALayer(bool use_mask, ForwardContext& ctx) = 0;
-      // [num_heads, sequence_len, d_(q,k,v)]
-
-  // Input: [sequence_len, d_model]
-  // Output: [sequence_len, d_model]
-  virtual FixedVector<FixedVector<float>> FFLayer(FixedVector<FixedVector<float>>& input) = 0;
-  virtual float layerNormalization(FixedVector<FixedVector<float>>& input) = 0;
+  virtual FixedVector<FixedVector<float>> FFLayer(FixedVector<FixedVector<float>>& input) = 0; // [seq_len, d_moddel]
+  virtual float layerNormalization(FixedVector<FixedVector<float>>& input) = 0; // [1]
 
   virtual float predict(uint64_t input, ForwardContext& ctx) = 0; // Final output, branch taken, or not
 
