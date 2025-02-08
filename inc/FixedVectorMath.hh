@@ -88,7 +88,7 @@ namespace FixedVectorMath {
     }
 
     template <typename T>
-    FixedVector<FixedVector<T>> linear(
+    inline FixedVector<FixedVector<T>> linear(
         const FixedVector<FixedVector<T>>& A, 
         const FixedVector<FixedVector<T>>& B, 
         const FixedVector<T>& bias
@@ -136,7 +136,7 @@ namespace FixedVectorMath {
     }
 
     template<typename T>
-    void mul(
+    inline void mul(
         FixedVector<FixedVector<T>>& out, 
         const FixedVector<FixedVector<T>>& A, 
         const FixedVector<FixedVector<T>>& B
@@ -151,7 +151,7 @@ namespace FixedVectorMath {
 
     // Softmax
     template <typename T>
-    void softmax(FixedVector<FixedVector<T>>& matrix) {
+    inline void softmax(FixedVector<FixedVector<T>>& matrix) {
         for (std::size_t i = 0; i < matrix.size(); ++i) {
             softmax(matrix[i]);
         }
