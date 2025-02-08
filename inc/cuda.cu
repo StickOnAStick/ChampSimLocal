@@ -1,6 +1,6 @@
 #include <cuda_runtime.h>
 #include <cassert>
-#include "FixedVector.hh"
+#include "FixedVectorMath.hh"
 #include <cmath>
 #include <chrono>
 #include <iostream>
@@ -130,8 +130,11 @@ __global__ void elementWiseMultiplyKernel(float* dA, float* dB, float* dOut, int
     Cuda API Definitions
 -----------------------------------------
 */   
-namespace CudaFixedVectorMath {
-    FixedVector<FixedVector<float>> dotproduct(FixedVector<FixedVector<float>>& A, FixedVector<FixedVector<float>>& B) {
+namespace FixedVectorMath {
+    FixedVector<FixedVector<float>> dotProductCuda(
+        FixedVector<FixedVector<float>>& A, 
+        FixedVector<FixedVector<float>>& B
+        ) {
         
         static cudaStream_t stream1;
         // std::cout << stream1;
@@ -229,7 +232,11 @@ namespace CudaFixedVectorMath {
         return out;
     }
 
-    void mul(FixedVector<float>& out, FixedVector<float>& A, FixedVector<float>& B)
+    void mulCuda(
+        FixedVector<float>& out, 
+        FixedVector<float>& A, 
+        FixedVector<float>& B
+        )
     {
         assert(A.size() == B.size());
         size_t N = A.size();
@@ -263,71 +270,77 @@ namespace CudaFixedVectorMath {
         // 6.) Clean up
     }
 
-void mul(FixedVector<FixedVector<float>>& out, FixedVector<FixedVector<float>>& A, FixedVector<FixedVector<float>>& B)
-{
-    int m = A.size();  // Number of rows
-    int n = A[0].size();  // Number of columns
+    void mulCuda(
+        FixedVector<FixedVector<float>>& out, 
+        FixedVector<FixedVector<float>>& A, 
+        FixedVector<FixedVector<float>>& B
+        )
+    {
+        int m = A.size();  // Number of rows
+        int n = A[0].size();  // Number of columns
 
-    // Allocate device memory for matrices A, B, and out
-    float* dA = nullptr;
-    float* dB = nullptr;
-    float* dOut = nullptr;
+        // Allocate device memory for matrices A, B, and out
+        float* dA = nullptr;
+        float* dB = nullptr;
+        float* dOut = nullptr;
 
-    // Allocate contiguous memory for all matrices (A, B, and out)
-    cudaMallocAsync((void**)&dA, m * n * sizeof(float), 0);
-    checkCudaError("cudaMalloc for dA");
+        // Allocate contiguous memory for all matrices (A, B, and out)
+        cudaMallocAsync((void**)&dA, m * n * sizeof(float), 0);
+        checkCudaError("cudaMalloc for dA");
 
-    cudaMallocAsync((void**)&dB, m * n * sizeof(float), 0);
-    checkCudaError("cudaMalloc for dB");
+        cudaMallocAsync((void**)&dB, m * n * sizeof(float), 0);
+        checkCudaError("cudaMalloc for dB");
 
-    cudaMallocAsync((void**)&dOut, m * n * sizeof(float), 0);
-    checkCudaError("cudaMalloc for dOut");
+        cudaMallocAsync((void**)&dOut, m * n * sizeof(float), 0);
+        checkCudaError("cudaMalloc for dOut");
 
-    // Flatten the matrices and copy to device (single memory copy)
-    float* hA = new float[m * n];
-    float* hB = new float[m * n];
+        // Flatten the matrices and copy to device (single memory copy)
+        float* hA = new float[m * n];
+        float* hB = new float[m * n];
 
 
-    // Flatten the 2D matrix A to 1D array
-    for (int i = 0; i < m; ++i) {
-        std::memcpy(hA + i * n, A[i].data(), n * sizeof(float));
-        std::memcpy(hB + i * n, B[i].data(), n * sizeof(float));
+        // Flatten the 2D matrix A to 1D array
+        for (int i = 0; i < m; ++i) {
+            std::memcpy(hA + i * n, A[i].data(), n * sizeof(float));
+            std::memcpy(hB + i * n, B[i].data(), n * sizeof(float));
+        }
+        
+        // Copy the flattened matrices to device
+        cudaMemcpyAsync(dA, hA, m * n * sizeof(float), cudaMemcpyHostToDevice);
+        checkCudaError("cudaMemcpy for dA");
+
+        cudaMemcpyAsync(dB, hB, m * n * sizeof(float), cudaMemcpyHostToDevice);
+        checkCudaError("cudaMemcpy for dB");
+
+        // Set up kernel launch parameters (using 16x16 block size)
+        dim3 blockDim(16, 16);  // Block size: 16x16 threads
+        dim3 gridDim((n + blockDim.x - 1) / blockDim.x, (m + blockDim.y - 1) / blockDim.y);  // Grid size
+
+        // Launch the kernel for element-wise multiplication
+        elementWiseMultiplyKernel<<<gridDim, blockDim>>>(dA, dB, dOut, m, n);
+        checkCudaError("Kernel launch failed");
+
+        // Copy the result back to the host in one go (flattened)
+        float* hOut = new float[m * n];
+        cudaMemcpyAsync(hOut, dOut, m * n * sizeof(float), cudaMemcpyDeviceToHost);
+        checkCudaError("cudaMemcpy for hOut");
+
+        // Copy the flattened result back into the 2D out structure
+        for (int i = 0; i < m; ++i) {
+            std::memcpy(out[i].data(), hOut + i * n, n * sizeof(float));
+        }
+
+        // Free host memory
+        delete[] hA;
+        delete[] hB;
+        delete[] hOut;
     }
-    
-    // Copy the flattened matrices to device
-    cudaMemcpyAsync(dA, hA, m * n * sizeof(float), cudaMemcpyHostToDevice);
-    checkCudaError("cudaMemcpy for dA");
 
-    cudaMemcpyAsync(dB, hB, m * n * sizeof(float), cudaMemcpyHostToDevice);
-    checkCudaError("cudaMemcpy for dB");
-
-    // Set up kernel launch parameters (using 16x16 block size)
-    dim3 blockDim(16, 16);  // Block size: 16x16 threads
-    dim3 gridDim((n + blockDim.x - 1) / blockDim.x, (m + blockDim.y - 1) / blockDim.y);  // Grid size
-
-    // Launch the kernel for element-wise multiplication
-    elementWiseMultiplyKernel<<<gridDim, blockDim>>>(dA, dB, dOut, m, n);
-    checkCudaError("Kernel launch failed");
-
-    // Copy the result back to the host in one go (flattened)
-    float* hOut = new float[m * n];
-    cudaMemcpyAsync(hOut, dOut, m * n * sizeof(float), cudaMemcpyDeviceToHost);
-    checkCudaError("cudaMemcpy for hOut");
-
-    // Copy the flattened result back into the 2D out structure
-    for (int i = 0; i < m; ++i) {
-        std::memcpy(out[i].data(), hOut + i * n, n * sizeof(float));
-    }
-
-    // Free host memory
-    delete[] hA;
-    delete[] hB;
-    delete[] hOut;
-}
-
-    FixedVector<FixedVector<float>> linear(FixedVector<FixedVector<float>> A, 
-                                           FixedVector<FixedVector<float>> B, 
-                                           FixedVector<float> bias) {
+    FixedVector<FixedVector<float>> linearCuda(
+        FixedVector<FixedVector<float>> A, 
+        FixedVector<FixedVector<float>> B,
+        FixedVector<float> bias
+        ) {
         static cudaStream_t stream2;
         // std::cout << stream1;
         if (stream2 == 0)
@@ -420,7 +433,10 @@ void mul(FixedVector<FixedVector<float>>& out, FixedVector<FixedVector<float>>& 
         return result;
     }
 
-    void add(FixedVector<float>& A, FixedVector<float>& B)
+    void addCuda(
+        FixedVector<float>& A,
+        FixedVector<float>& B
+        )
     {
         // 1.) Host Pointers (CPU)
         float* hA = A.data();
@@ -458,7 +474,10 @@ void mul(FixedVector<FixedVector<float>>& out, FixedVector<FixedVector<float>>& 
     }
 
 
-    void add(FixedVector<FixedVector<float>>& A, FixedVector<FixedVector<float>>& B) {
+    void addCuda(
+        FixedVector<FixedVector<float>>& A, 
+        FixedVector<FixedVector<float>>& B
+        ) {
         int m = A.size();     // Number of rows in A
         int n = A[0].size();  // Number of columns in A
         

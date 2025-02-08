@@ -10,14 +10,13 @@
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 
-#include  "FixedVectorMath.hh"
-
+#include "FixedVectorMath.hh"
 
 #include "msl/fwcounter.h"
 #include "ooo_cpu.h"
 
-#include "FixedVector.hh"
-
+// Quick n dirty implementation
+#define USE_CUDA 1 // 0 to disable
 
 namespace
 {
@@ -123,11 +122,21 @@ public:
       - w_q, w_v, w_k: [d_model, d_q] [d_model, d_k] [d_model, d_v]
       - Q, K, V:  [seq_len, d_q] [seq_len, d_v]
     */
-    // Compute Q, K, V
-    FixedVector<FixedVector<float>> Q = FixedVectorMath::dotProduct(sequence_history, w_q);
-    FixedVector<FixedVector<float>> K = FixedVectorMath::dotProduct(sequence_history, w_k);
-    FixedVector<FixedVector<float>> V = FixedVectorMath::dotProduct(sequence_history, w_v);
 
+    FixedVector<FixedVector<float>> Q(sequence_len, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> K(sequence_len, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> V(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    // Compute Q, K, V
+    if (USE_CUDA){
+      Q = FixedVectorMath::dotProductCuda(sequence_history, w_q);
+      K = FixedVectorMath::dotProductCuda(sequence_history, w_k);
+      V = FixedVectorMath::dotProductCuda(sequence_history, w_v);
+    } else{
+      Q = FixedVectorMath::dotProduct(sequence_history, w_q);
+      K = FixedVectorMath::dotProduct(sequence_history, w_k);
+      V = FixedVectorMath::dotProduct(sequence_history, w_v);
+    }
     /*
       Step 2. Process Each Head
       - Slice Q, K, V for each head
@@ -221,9 +230,12 @@ public:
 
       where W_O is of dim [d_model, d_model]
     */
-
-    FixedVector<FixedVector<float>> output = FixedVectorMath::dotProduct(attention_out, w_o);
-
+   FixedVector<FixedVector<float>> output;
+    if (USE_CUDA){
+      output = FixedVectorMath::dotProductCuda(attention_out, w_o);
+    } else {
+      output = FixedVectorMath::dotProduct(attention_out, w_o);
+    }
     return output;
   }
 
@@ -251,20 +263,31 @@ public:
     // 1) hidden = input * w_ff1 + b_ff1
     //    => hidden: shape [seq_len, d_ff]
     // --------------------------------------------------
-    FixedVector<FixedVector<float>> hidden = FixedVectorMath::linear(input, w_ff1, b_ff1);
-    
-    //---------------------------------------------------
-    // 2.) Relu in place
-    //---------------------------------------------------
-    FixedVectorMath::relu(hidden);
-
-    //---------------------------------------------------
-    // 3.) output = hidden * w_ff2 + b_ff2
-    //     => output: shapre [seq_len, d_model]
-    //---------------------------------------------------
-    FixedVector<FixedVector<float>> output = FixedVectorMath::linear(hidden, w_ff2, b_ff2);
-
-    return output;
+    if (USE_CUDA){
+      FixedVector<FixedVector<float>> hidden = FixedVectorMath::linearCuda(input, w_ff1, b_ff1);
+      //---------------------------------------------------
+      // 2.) Relu in place
+      //---------------------------------------------------
+      FixedVectorMath::relu(hidden);
+      //---------------------------------------------------
+      // 3.) output = hidden * w_ff2 + b_ff2
+      //     => output: shapre [seq_len, d_model]
+      //---------------------------------------------------
+      FixedVector<FixedVector<float>> output = FixedVectorMath::linearCuda(hidden, w_ff2, b_ff2);
+      return output;
+    } else {
+      FixedVector<FixedVector<float>> hidden = FixedVectorMath::linear(input, w_ff1, b_ff1);
+      //---------------------------------------------------
+      // 2.) Relu in place
+      //---------------------------------------------------
+      FixedVectorMath::relu(hidden);
+      //---------------------------------------------------
+      // 3.) output = hidden * w_ff2 + b_ff2
+      //     => output: shapre [seq_len, d_model]
+      //---------------------------------------------------
+      FixedVector<FixedVector<float>> output = FixedVectorMath::linear(hidden, w_ff2, b_ff2);
+      return output;
+    }
   }
 
   float layerNormalization(FixedVector<FixedVector<float>>& input) override {
