@@ -9,7 +9,7 @@
 namespace FixedVectorMath {
     // Transpose operation for a matrix
     template <typename T>
-    inline FixedVector<FixedVector<T>> transpose(const FixedVector<FixedVector<T>>& matrix) {
+    FixedVector<FixedVector<T>> transpose(const FixedVector<FixedVector<T>>& matrix) {
         std::size_t rows = matrix.size();
         std::size_t cols = matrix[0].size();
 
@@ -34,7 +34,7 @@ namespace FixedVectorMath {
 
     // Normalize the fixed vector
     template <typename T>
-    inline void normalize(FixedVector<T>& vec) {
+    void normalize(FixedVector<T>& vec) {
         T sum_of_squares = 0;
         for (std::size_t i = 0; i < vec.size(); i++) {
             sum_of_squares += vec[i] * vec[i];
@@ -56,7 +56,7 @@ namespace FixedVectorMath {
     // Normalize each row in the matrix
     // In transformer logic, we do normalization by row
     template <typename T>
-    inline void normalize(FixedVector<FixedVector<T>>& matrix) {
+    void normalize(FixedVector<FixedVector<T>>& matrix) {
         for (std::size_t i = 0; i < matrix.size(); i++) {
             normalize(matrix[i]);
         }
@@ -64,7 +64,7 @@ namespace FixedVectorMath {
 
     // Dot product of matrix
     template <typename T>
-    inline FixedVector<FixedVector<T>> dotProduct(const FixedVector<FixedVector<T>>& A, const FixedVector<FixedVector<T>>& B) {
+    FixedVector<FixedVector<T>> dotProduct(const FixedVector<FixedVector<T>>& A, const FixedVector<FixedVector<T>>& B) {
         size_t rowsA = A.size();
         size_t rowsB = B.size();
         size_t colsA = A[0].size();
@@ -88,7 +88,7 @@ namespace FixedVectorMath {
     }
 
     template <typename T>
-    inline FixedVector<FixedVector<T>> linear(
+     FixedVector<FixedVector<T>> linear(
         const FixedVector<FixedVector<T>>& A, 
         const FixedVector<FixedVector<T>>& B, 
         const FixedVector<T>& bias
@@ -126,7 +126,7 @@ namespace FixedVectorMath {
     }
 
     template<typename T>
-    inline void mul(FixedVector<T>& out, const FixedVector<T>& A, const FixedVector<T>& B){
+    void mul(FixedVector<T>& out, const FixedVector<T>& A, const FixedVector<T>& B){
         if (A.size() != B.size() || A.size() != out.size())
             throw std::invalid_argument("Size mismatch between out = A*B matricies.");
         
@@ -136,7 +136,7 @@ namespace FixedVectorMath {
     }
 
     template<typename T>
-    inline void mul(
+     void mul(
         FixedVector<FixedVector<T>>& out, 
         const FixedVector<FixedVector<T>>& A, 
         const FixedVector<FixedVector<T>>& B
@@ -151,7 +151,7 @@ namespace FixedVectorMath {
 
     // Softmax
     template <typename T>
-    inline void softmax(FixedVector<FixedVector<T>>& matrix) {
+     void softmax(FixedVector<FixedVector<T>>& matrix) {
         for (std::size_t i = 0; i < matrix.size(); ++i) {
             softmax(matrix[i]);
         }
@@ -159,7 +159,7 @@ namespace FixedVectorMath {
 
     // Apply mask, used in Masked Multi Headed Attention
     template <typename T>
-    inline void applyMask(FixedVector<FixedVector<T>>& scores) {
+    void applyMask(FixedVector<FixedVector<T>>& scores) {
         // mask = [ [0, -inf, -inf, -inf, -inf],
         //          [0,    0, -inf, -inf, -inf],
         //          [0,    0,    0, -inf, -inf],
@@ -173,7 +173,7 @@ namespace FixedVectorMath {
     }
 
     template <typename T>
-    inline void add(FixedVector<T>& A, FixedVector<T>& B){
+    void add(FixedVector<T>& A, FixedVector<T>& B){
         /*
             This variant stores the result in A
         */
@@ -189,7 +189,7 @@ namespace FixedVectorMath {
     }
 
     template <typename T>
-    inline void add(FixedVector<FixedVector<T>>& A, FixedVector<FixedVector<T>>& B){
+    void add(FixedVector<FixedVector<T>>& A, FixedVector<FixedVector<T>>& B){
         /*
         NOTE: This variant stores the result in A
         */
