@@ -71,7 +71,7 @@ public:
     }
   }
 
-  FixedVector<FixedVector<float>> MALayer(bool use_mask = false, ForwardContext& ctx) override {
+  FixedVector<FixedVector<float>> MALayer(ForwardContext& ctx, bool use_mask = true) override {
     //fmt::println("MA Layer. masked: {}", use_mask); // Know where your at when it crashes!
 
     /*
@@ -322,7 +322,7 @@ public:
     /*
       Masked Multi-Headed Attention
     */
-    FixedVector<FixedVector<float>> MMA_out = this->MALayer(true);
+    FixedVector<FixedVector<float>> MMA_out = this->MALayer(ctx, true);
     FixedVectorMath::add(MMA_out, this->sequence_history); // Result stored in MMA_Out
     FixedVectorMath::normalize(MMA_out); // Store mean and variance for back prop
 
@@ -336,6 +336,10 @@ public:
     float out = this->layerNormalization(FF_out);
 
     return out;
+  }
+
+  void backProp() override {
+    // Do Something!
   }
 };
 
@@ -389,13 +393,13 @@ uint8_t O3_CPU::predict_branch(uint64_t ip) {
   bool prediction = output > 0.5; // Threshold
 
   // Record the prediction and current state of the transformer which led to this prediction
-  ::prediction_state_buf.at(this).push_back({ip, prediction, ::spec_global_history.at(this) });
-  if(::prediction_state_buf.at(this).size() > ::NUM_UPDATE_ENTRIES)
-    ::prediction_state_buf.at(this).pop_front();
+  // ::prediction_state_buf.at(this).push_back({ip, prediction, ::spec_global_history.at(this) });
+  // if(::prediction_state_buf.at(this).size() > ::NUM_UPDATE_ENTRIES)
+  //   ::prediction_state_buf.at(this).pop_front();
   
-  ::spec_global_history.at(this).push_back(prediction);
-  if (::spec_global_history.at(this).size() > ::predictors.at(this).get_seq_len())
-    ::spec_global_history.at(this).erase(::spec_global_history.at(this).begin());
+  // ::spec_global_history.at(this).push_back(prediction);
+  // if (::spec_global_history.at(this).size() > ::predictors.at(this).get_seq_len())
+  //   ::spec_global_history.at(this).erase(::spec_global_history.at(this).begin());
 
 
   //fmt::println("Transformer predicted: {} for ip {}\n", prediction, ip);
@@ -405,20 +409,20 @@ uint8_t O3_CPU::predict_branch(uint64_t ip) {
 
 void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type) {
   
-  auto state = std::find_if(
-    std::begin(::prediction_state_buf.at(this)), 
-    std::end(::prediction_state_buf.at(this)), 
-    [ip](const ::Prediction& x) { return x.ip == ip; }
-  );
-  if (state == std::end(::prediction_state_buf.at(this)))
-    return; // Skip update. State was lost.
+  // auto state = std::find_if(
+  //   std::begin(::prediction_state_buf.at(this)), 
+  //   std::end(::prediction_state_buf.at(this)), 
+  //   [ip](const ::Prediction& x) { return x.ip == ip; }
+  // );
+  // if (state == std::end(::prediction_state_buf.at(this)))
+  //   return; // Skip update. State was lost.
   
-  auto [_ip, prediction, history] = *state;
-  ::prediction_state_buf.at(this).erase(state);
+  // auto [_ip, prediction, history] = *state;
+  // ::prediction_state_buf.at(this).erase(state);
 
-  ::global_history.at(this).push_back(taken);
-  if (::global_history.at(this).size() > ::predictors.at(this).get_seq_len())
-    ::global_history.at(this).erase(::global_history.at(this).begin());
+  // ::global_history.at(this).push_back(taken);
+  // if (::global_history.at(this).size() > ::predictors.at(this).get_seq_len())
+  //   ::global_history.at(this).erase(::global_history.at(this).begin());
   
 
 

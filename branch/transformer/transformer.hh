@@ -275,7 +275,7 @@ public:
   //virtual void learnable_posEncoding(uint64_t ip) = 0;
 
   // Attention
-  virtual FixedVector<FixedVector<float>> MALayer(bool use_mask, ForwardContext& ctx) = 0; // [seq_len, d_model]
+  virtual FixedVector<FixedVector<float>> MALayer(ForwardContext& ctx, bool use_mask ) = 0; // [seq_len, d_model]
       // Head Dimensions:
       // [sequence_len, d_k], where d_k is d_model / h so long as d_model % h == 0 and h is the number of heads 
 
