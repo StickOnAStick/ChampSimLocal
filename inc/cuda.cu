@@ -19,7 +19,6 @@ void checkCudaError(const char* message) {
 #define TILE_SIZE 32
 #define BLOCK_SIZE 32
 
-
 void print_attention_scores_per_head(float* d_attention_scores, int num_heads, int sequence_len) {
     float* h_attention_scores = new float[num_heads * sequence_len * sequence_len];
     cudaMemcpy(h_attention_scores, d_attention_scores, num_heads * sequence_len * sequence_len * sizeof(float), cudaMemcpyDeviceToHost);
@@ -372,12 +371,18 @@ __global__ void softMax(float* output, float* input, int M, int N)
     }
 }
 
+#define BLOCK_SIZE 32
 /*
 -----------------------------------------
     Cuda API Definitions
 -----------------------------------------
 */   
 namespace FixedVectorMath {
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+=======
+>>>>>>> ecbcde2 (Fixed sync problem with cuda streams)
 
     FixedVector<FixedVector<float>> MMA_CUDA(
         bool use_mask,
@@ -566,6 +571,10 @@ namespace FixedVectorMath {
     }
     
     
+<<<<<<< HEAD
+=======
+>>>>>>> 9f3621e (Fixed sync problem with cuda streams)
+>>>>>>> ecbcde2 (Fixed sync problem with cuda streams)
     FixedVector<FixedVector<float>> dotProductCuda(
         FixedVector<FixedVector<float>>& A, 
         FixedVector<FixedVector<float>>& B
@@ -769,9 +778,24 @@ namespace FixedVectorMath {
     FixedVector<FixedVector<float>> linearCuda(
         FixedVector<FixedVector<float>> A, 
         FixedVector<FixedVector<float>> B,
+<<<<<<< HEAD
         FixedVector<float> bias) 
         {
 
+=======
+<<<<<<< HEAD
+        FixedVector<float> bias
+        ) {
+        static cudaStream_t stream2;
+        // std::cout << stream1;
+        if (stream2 == 0)
+            cudaStreamCreate (&stream2);
+=======
+        FixedVector<float> bias) 
+        {
+
+>>>>>>> 9f3621e (Fixed sync problem with cuda streams)
+>>>>>>> ecbcde2 (Fixed sync problem with cuda streams)
         int m = A.size();    // Number of rows in A
         int n = B[0].size(); // Number of columns in B
         int k = A[0].size(); // Number of columns in A (also the number of rows in B)
