@@ -18,36 +18,6 @@ void checkCudaError(const char* message) {
 #define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
 #define TILE_SIZE 32
 
-/*
-    This file is split into two sections!
-
-    1. Kernel code
-        - This is the code executed on the GPU itself
-    
-    2. Cuda Definitions
-        - Our API to interact with the GPU, responsible for data preperation, transmission, and return
-
-    ////////////////////////////////////////
-    // Important Variables
-    ////////////////////////////////////////
-
-    blockIdx: Which block (in a given dimension denoted by .(x,y,z)) the current thread belongs to.
-
-    blockDim: How many threads per block along the given axis .(x, y, z)
-        - Nvidia executes threads in groups of 32 called warps. It's optimal (not required) to keep block sizes a multiple of 32
-
-
-    Refer to the Cheat Sheet for visualizing these dimensions. 
-    https://www.eecs.umich.edu/courses/eecs471/resources/materials/CUDA-Thread-Indexing-Cheatsheet.pdf
-*/
-
-/*
------------------------------------------
-    Kernel function defintions
------------------------------------------
-*/
-
-
 void print_attention_scores_per_head(float* d_attention_scores, int num_heads, int sequence_len) {
     float* h_attention_scores = new float[num_heads * sequence_len * sequence_len];
     cudaMemcpy(h_attention_scores, d_attention_scores, num_heads * sequence_len * sequence_len * sizeof(float), cudaMemcpyDeviceToHost);
@@ -98,7 +68,7 @@ void printmatrix(const FixedVector<FixedVector<float>>& matrix, const std::strin
     std::cout << std::endl;
   }
   
-void print_dmask(float* dmask, int m) {
+  void print_dmask(float* dmask, int m) {
     // Allocate host memory
     float* hmask = new float[m * m];
 
@@ -118,7 +88,7 @@ void print_dmask(float* dmask, int m) {
     delete[] hmask;
 }
 
-void print_hmask(const float* hmask, int m) {
+  void print_hmask(const float* hmask, int m) {
     std::cout << "First 5x5 submatrix of hmask:\n";
     for (int i = 0; i < 5 && i < m; ++i) {  // Ensure within bounds
         for (int j = 0; j < 5 && j < m; ++j) {
@@ -127,7 +97,6 @@ void print_hmask(const float* hmask, int m) {
         std::cout << "\n";
     }
 }
-
 void printMatrix(const char* name, float* d_matrix, int rows, int cols) {
     FixedVector<float> h_matrix(rows * cols);
     cudaMemcpy(h_matrix.data(), d_matrix, rows * cols * sizeof(float), cudaMemcpyDeviceToHost);
@@ -144,6 +113,34 @@ void printMatrix(const char* name, float* d_matrix, int rows, int cols) {
     }
     std::cout << "--------------------------------------\n";
 }
+/*
+    This file is split into two sections!
+
+    1. Kernel code
+        - This is the code executed on the GPU itself
+    
+    2. Cuda Definitions
+        - Our API to interact with the GPU, responsible for data preperation, transmission, and return
+
+    ////////////////////////////////////////
+    // Important Variables
+    ////////////////////////////////////////
+
+    blockIdx: Which block (in a given dimension denoted by .(x,y,z)) the current thread belongs to.
+
+    blockDim: How many threads per block along the given axis .(x, y, z)
+        - Nvidia executes threads in groups of 32 called warps. It's optimal (not required) to keep block sizes a multiple of 32
+
+
+    Refer to the Cheat Sheet for visualizing these dimensions. 
+    https://www.eecs.umich.edu/courses/eecs471/resources/materials/CUDA-Thread-Indexing-Cheatsheet.pdf
+*/
+
+/*
+-----------------------------------------
+    Kernel function defintions
+-----------------------------------------
+*/
 
 
 __global__ void mulKernel(const float* A, const float* B, float* out, size_t N){
@@ -223,7 +220,7 @@ __global__ void elementWiseMultiplyKernel(float* dA, float* dB, float* dOut, int
         dOut[index] = dA[index] * dB[index];
     }
 }
-
+#define TILE_SIZE 32
 __global__ void sgemm_blockheads(int m, int n, int k, 
     const float* sequence_history, const float *w_q, const float *w_v, const float *w_k,
     float* Q, float* V, float* K) {
