@@ -13,6 +13,65 @@
 
 using json = nlohmann::json;
 
+
+struct ForwardContext {
+  // Memoization of forward pass for fast backward pass 
+
+  // MMA Attention Intermediate results - Q, K, V = [seq_len, d_model]
+  FixedVector<FixedVector<float>> Q;
+  FixedVector<FixedVector<float>> K;
+  FixedVector<FixedVector<float>> V;
+
+  FixedVector<FixedVector<float>> softmax_attn;       // Softmax(QK^T / sqrt(d_k))
+  FixedVector<FixedVector<float>> attention_out;      // Before W_O
+
+  // Post attention Residual + norm
+  FixedVector<FixedVector<float>> pre_attention_layernorm; // LayerNorm input
+  FixedVector<FixedVector<float>> attention_residual;
+
+  // Feed Forward
+  FixedVector<FixedVector<float>> ff_input;
+  FixedVector<FixedVector<float>> ff_pre_activation;  // in * w_ff1 + b_ff1 (before activation)
+  FixedVector<FixedVector<float>> ff_hidden;         // after activation
+  FixedVector<FixedVector<float>> ff1_bias_out;      // (optional) after first linear + bias
+  FixedVector<FixedVector<float>> ff_out;           // after second linear
+
+  // Post FF residual + norm
+  FixedVector<FixedVector<float>> pre_ff_layernorm; // LayerNorm input
+  FixedVector<FixedVector<float>> ff_residual;
+
+  // Final LayerNorm Pooling + logits 
+  FixedVector<float> pooled; // [d_model]
+  float logits;
+  float output;    
+
+  // Optional: LayerNorm parameters (might use later)
+  FixedVector<float> layernorm_gamma; 
+  FixedVector<float> layernorm_beta;
+
+  // Meaningful default constructor -- Be considerate when changing d_model, seq_len 
+  ForwardContext(size_t seq_len = 24, size_t d_model = 70) 
+      : Q(seq_len, FixedVector<float>(d_model, 0.0f)),
+        K(seq_len, FixedVector<float>(d_model, 0.0f)),
+        V(seq_len, FixedVector<float>(d_model, 0.0f)),
+        scaled_attn_scores(seq_len, FixedVector<float>(seq_len, 0.0f)),
+        softmax_attn(seq_len, FixedVector<float>(seq_len, 0.0f)),
+        attention_scores(seq_len, FixedVector<float>(seq_len, 0.0f)),
+        attention_out(seq_len, FixedVector<float>(d_model, 0.0f)),
+        attn_projected(seq_len, FixedVector<float>(d_model, 0.0f)),
+        pre_attention_layernorm(seq_len, FixedVector<float>(d_model, 0.0f)),
+        attention_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_pre_activation(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_hidden(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff1_bias_out(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_out(seq_len, FixedVector<float>(d_model, 0.0f)),
+        pre_ff_layernorm(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
+        pooled(d_model, 0.0f),
+        layernorm_gamma(d_model, 0.0f),
+        layernorm_beta(d_model, 0.0f) {}
+};
+
 class TransformerBase
 {
 protected:
@@ -200,18 +259,6 @@ public:
 
   }
 
-  bool get_prediction(uint64_t ip){
-    /*
-      THIS IS NOT FINALIZED.
-
-      The next PR needs to re-work the state buffers and spec/global histories to
-      properly work with back propagation. 
-    */
-    // Gross
-    return false;
-  }
-  
-
   // Returns vector of [d_in + d_pos, sequence_len] of floating point "binary-vectors" (Only binary values stored in each float)
   // [d_model * sequence_len]
   // The following needs to be updated for dynamic bitset sizing. (Should be this->sequence_len)
@@ -223,13 +270,15 @@ public:
   //virtual FixedVector<FixedVector<float>> MMALayer(const FixedVector<FixedVector<float>>& input) = 0;
 
   // [sequence_len, d_model], inside it transforms to [seq_len, d_k] where d_k = d_model / h. h = number of heads
-  virtual FixedVector<FixedVector<float>> MALayer(bool use_mask) = 0;
+  virtual FixedVector<FixedVector<float>> MALayer(ForwardContext& ctx, bool use_mask = true) = 0;
       // [num_heads, sequence_len, d_(q,k,v)]
 
   // Input: [sequence_len, d_model]
   // Output: [sequence_len, d_model]
-  virtual FixedVector<FixedVector<float>> FFLayer(FixedVector<FixedVector<float>>& input) = 0;
-  virtual float layerNormalization(FixedVector<FixedVector<float>>& input) = 0;
+  virtual FixedVector<FixedVector<float>> FFLayer(ForwardContext& ctx, FixedVector<FixedVector<float>>& input) = 0;
+  virtual float pooledOutput(ForwardContext& ctx, FixedVector<FixedVector<float>>& input) = 0;
 
-  virtual bool predict(uint64_t input) = 0; // Final output, branch taken, or not
+  virtual bool predict(ForwardContext& ctx, uint64_t input) = 0; // Final output, branch taken, or not
+
+  virtual void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate) = 0;
 };

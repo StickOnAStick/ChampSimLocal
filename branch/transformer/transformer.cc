@@ -72,7 +72,7 @@ public:
     }
   }
 
-  FixedVector<FixedVector<float>> MALayer(bool use_mask = false) override {
+  FixedVector<FixedVector<float>> MALayer(ForwardContext& ctx, bool use_mask = false) override {
     //fmt::println("MA Layer. masked: {}", use_mask); // Know where your at when it crashes!
 
     /*
@@ -104,7 +104,6 @@ public:
 
     // Output matrix
     FixedVector<FixedVector<float>> attention_out(sequence_len, FixedVector<float>(d_model, 0.0f));
-
     FixedVector<FixedVector<float>> mask(sequence_len, FixedVector<float>(sequence_len, 0.0f));
     if (use_mask){
       FixedVectorMath::applyMask(mask);
@@ -122,21 +121,10 @@ public:
       - w_q, w_v, w_k: [d_model, d_q] [d_model, d_k] [d_model, d_v]
       - Q, K, V:  [seq_len, d_q] [seq_len, d_v]
     */
-
-    FixedVector<FixedVector<float>> Q(sequence_len, FixedVector<float>(d_model, 0.0f));
-    FixedVector<FixedVector<float>> K(sequence_len, FixedVector<float>(d_model, 0.0f));
-    FixedVector<FixedVector<float>> V(sequence_len, FixedVector<float>(d_model, 0.0f));
-
-    // Compute Q, K, V
-    if (USE_CUDA){
-      Q = FixedVectorMath::dotProductCuda(sequence_history, w_q);
-      K = FixedVectorMath::dotProductCuda(sequence_history, w_k);
-      V = FixedVectorMath::dotProductCuda(sequence_history, w_v);
-    } else{
-      Q = FixedVectorMath::dotProduct(sequence_history, w_q);
-      K = FixedVectorMath::dotProduct(sequence_history, w_k);
-      V = FixedVectorMath::dotProduct(sequence_history, w_v);
-    }
+    
+    ctx.Q = USE_CUDA ? FixedVectorMath::dotProductCuda(sequence_history, w_q) : FixedVectorMath::dotProduct(sequence_history, w_q);
+    ctx.K = USE_CUDA ? FixedVectorMath::dotProductCuda(sequence_history, w_k) : FixedVectorMath::dotProduct(sequence_history, w_k);
+    ctx.V = USE_CUDA ? FixedVectorMath::dotProductCuda(sequence_history, w_v) : FixedVectorMath::dotProduct(sequence_history, w_v);
     /*
       Step 2. Process Each Head
       - Slice Q, K, V for each head
@@ -159,9 +147,9 @@ public:
       for (int i = 0; i < sequence_len; ++i){ // Gross copy of slice
         for (int j = 0; j < d_head; ++j){
           // To note about this, rows are the sequence history, cols are the low-rank embeddings of d_model for Q, K, V
-          Q_head[i][j] = Q[i][head * d_head + j]; 
-          K_head[i][j] = K[i][head * d_head + j];
-          V_head[i][j] = V[i][head * d_head + j];
+          Q_head[i][j] = ctx.Q[i][head * d_head + j]; 
+          K_head[i][j] = ctx.K[i][head * d_head + j];
+          V_head[i][j] = ctx.V[i][head * d_head + j];
         }
       }
 
@@ -198,6 +186,7 @@ public:
 
       // Softmax the attention scores (row-wise)
       FixedVectorMath::softmax(attention_scores);
+      ctx.softmax_attn = attention_scores;
 
       // Compute head_out = attention_scores * V_head
       // [seq_len, d_head]
@@ -230,24 +219,13 @@ public:
 
       where W_O is of dim [d_model, d_model]
     */
-   FixedVector<FixedVector<float>> output;
-    if (USE_CUDA){
-      output = FixedVectorMath::dotProductCuda(attention_out, w_o);
-    } else {
-      output = FixedVectorMath::dotProduct(attention_out, w_o);
-    }
-    return output;
+    ctx.attention_out = USE_CUDA ? FixedVectorMath::dotProductCuda(attention_out, w_o) : FixedVectorMath::dotProduct(attention_out, w_o);
+    return ctx.attention_out;
   }
 
-  FixedVector<FixedVector<float>> FFLayer(FixedVector<FixedVector<float>>& input) override {
-    //fmt::println("Feed Forward Layer"); // Know where your at when it crashes!
+  FixedVector<FixedVector<float>> FFLayer(ForwardContext& ctx, FixedVector<FixedVector<float>>& input) override {
     /*
       FFN(x) = ReLU(0, xW_1 + b_1)W_2 + b_2
-
-      Flow:
-        1) hidden = input * w_ff1 + b_ff1
-        2) hidden = ReLU(hidden)
-        3) output = hidden * w_ff2 + b_ff2
 
       Matrix sizes:
         - in/out: [seq_len, d_model]
@@ -263,36 +241,26 @@ public:
     // 1) hidden = input * w_ff1 + b_ff1
     //    => hidden: shape [seq_len, d_ff]
     // --------------------------------------------------
-    if (USE_CUDA){
-      FixedVector<FixedVector<float>> hidden = FixedVectorMath::linearCuda(input, w_ff1, b_ff1);
-      //---------------------------------------------------
-      // 2.) Relu in place
-      //---------------------------------------------------
-      FixedVectorMath::relu(hidden);
-      //---------------------------------------------------
-      // 3.) output = hidden * w_ff2 + b_ff2
-      //     => output: shapre [seq_len, d_model]
-      //---------------------------------------------------
-      FixedVector<FixedVector<float>> output = FixedVectorMath::linearCuda(hidden, w_ff2, b_ff2);
-      return output;
-    } else {
-      FixedVector<FixedVector<float>> hidden = FixedVectorMath::linear(input, w_ff1, b_ff1);
-      //---------------------------------------------------
-      // 2.) Relu in place
-      //---------------------------------------------------
-      FixedVectorMath::relu(hidden);
-      //---------------------------------------------------
-      // 3.) output = hidden * w_ff2 + b_ff2
-      //     => output: shapre [seq_len, d_model]
-      //---------------------------------------------------
-      FixedVector<FixedVector<float>> output = FixedVectorMath::linear(hidden, w_ff2, b_ff2);
-      return output;
-    }
+
+    FixedVector<FixedVector<float>> hidden = USE_CUDA ? FixedVectorMath::linearCuda(input, w_ff1, b_ff1) : FixedVectorMath::linear(input, w_ff1, b_ff1);
+    ctx.ff_hidden = hidden;
+    //---------------------------------------------------
+    // 2.) Relu in place
+    //---------------------------------------------------
+    FixedVectorMath::relu(hidden);
+    //---------------------------------------------------
+    // 3.) output = hidden * w_ff2 + b_ff2
+    //     => output: shapre [seq_len, d_model]
+    //---------------------------------------------------
+    FixedVector<FixedVector<float>> output = USE_CUDA ? FixedVectorMath::linearCuda(hidden, w_ff2, b_ff2) : FixedVectorMath::linear(hidden, w_ff2, b_ff2);
+    ctx.ff_out = output;
+    return output;
   }
 
-  float layerNormalization(FixedVector<FixedVector<float>>& input) override {
-    //fmt::println("Final Layer Normalization");
+  float pooledOutput(ForwardContext& ctx, FixedVector<FixedVector<float>>& input) override {
     /*
+      Reduce the entire transformer state to a single prediction. 
+
       input = [seq_len, d_model]
       out   = [1]
 
@@ -313,6 +281,7 @@ public:
     for(size_t i = 0; i < pooled.size(); ++i){        // 1/seq_len
       pooled[i] /= (float)this->sequence_len;
     }
+    ctx.pooled = pooled;
 
     //--------------------------------------------------------
     // 2.) Compute logits
@@ -329,11 +298,12 @@ public:
     //     Still don't know if this will be optimal, but we will use for the inital tests.
     //--------------------------------------------------------
     float out = 1.0f / (1.0f + std::exp(-logits));
+    ctx.output = out;
 
     return out;
   }
 
-  bool predict(uint64_t ip){
+  bool predict(ForwardContext& ctx, uint64_t ip){
 
     /*
       Positional Encoding
@@ -347,22 +317,102 @@ public:
     /*
       Masked Multi-Headed Attention
     */
-    FixedVector<FixedVector<float>> MMA_out = this->MALayer(true);
+    FixedVector<FixedVector<float>> MMA_out = this->MALayer(ctx, true);
     FixedVectorMath::add(MMA_out, this->sequence_history); // Result stored in MMA_Out
     FixedVectorMath::normalize(MMA_out);
 
     /*
       Feed-Forward Layer
     */
-    FixedVector<FixedVector<float>> FF_out = this->FFLayer(MMA_out);
+    FixedVector<FixedVector<float>> FF_out = this->FFLayer(ctx, MMA_out);
     FixedVectorMath::add(FF_out, MMA_out);
     FixedVectorMath::normalize(FF_out);
 
-    float out = this->layerNormalization(FF_out);
+    float out = this->pooledOutput(ctx, FF_out);
 
     this->spec_global_history.push(bool(out)); // Update the speculative history.
 
     return bool(out);
+  }
+
+  void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate){
+    // Compute BCE loss gradient w.r.t. output
+    float y_pred = ctx.output;
+    ctx.d_logits = (y_pred - y_true) / (y_pred * (1 - y_pred)); // dL/dy * dy/dz
+    
+    // Backprop through final pooling layer
+    for (size_t i = 0; i < d_model; i++) {
+        ctx.d_pooled[i] = ctx.d_logits * w_out[i];
+    }
+    
+    // Backprop through final layer norm
+    for (size_t i = 0; i < d_model; i++) {
+        ctx.d_pooled[i] *= ctx.layernorm_gamma[i];
+    }
+    
+    // Distribute gradients back to sequence level
+    for (size_t i = 0; i < sequence_len; i++) {
+        for (size_t j = 0; j < d_model; j++) {
+            ctx.d_ff_out[i][j] = ctx.d_pooled[j] / sequence_len;
+        }
+    }
+    
+    // Backprop through final layer norm (ff_residual)
+    for (size_t i = 0; i < ctx.ff_hidden.size(); i++) {
+        for (size_t j = 0; j < d_model; j++) {
+            ctx.d_ff_hidden[i][j] = ctx.d_ff_out[i][j];
+            if (ctx.ff_hidden[i][j] <= 0) {
+                ctx.d_ff_hidden[i][j] = 0; // ReLU derivative
+            }
+        }
+    }
+    
+    // Backprop through first FF layer
+    for (size_t i = 0; i < ctx.ff_pre_activation.size(); i++) {
+        for (size_t j = 0; j < d_ff; j++) {
+            ctx.d_ff_pre_activation[i][j] = ctx.d_ff_hidden[i][j] * (ctx.ff_pre_activation[i][j] > 0);
+        }
+    }
+    
+    // Compute gradients for w_ff1 and b_ff1
+    for (size_t i = 0; i < d_model; i++) {
+        for (size_t j = 0; j < d_ff; j++) {
+            w_ff1[i][j] -= learning_rate * ctx.d_ff_pre_activation[0][j] * ctx.ff_residual[0][i];
+        }
+        b_ff1[i] -= learning_rate * ctx.d_ff_pre_activation[0][i];
+    }
+    
+    // Backprop through Attention Layer
+    ctx.d_attention_out = ctx.d_ff_out;
+    
+    // Backprop through multihead attention
+    for (size_t i = 0; i < sequence_len; i++) {
+        for (size_t j = 0; j < d_model; j++) {
+            for (size_t k = 0; k < sequence_len; k++) {
+                ctx.d_softmax_attn[i][k] += ctx.d_attention_out[i][j] * ctx.V[k][j];
+            }
+        }
+    }
+    
+    // Compute d_Q, d_K, d_V
+    for (size_t i = 0; i < sequence_len; i++) {
+        for (size_t j = 0; j < d_model; j++) {
+            for (size_t k = 0; k < sequence_len; k++) {
+                ctx.d_Q[i][j] += ctx.d_softmax_attn[i][k] * ctx.K[k][j];
+                ctx.d_K[i][j] += ctx.d_softmax_attn[k][i] * ctx.Q[k][j];
+                ctx.d_V[i][j] += ctx.d_attention_out[i][j] * ctx.softmax_attn[i][j];
+            }
+        }
+    }
+    
+    // Update Attention Weights
+    for (size_t i = 0; i < d_model; i++) {
+        for (size_t j = 0; j < d_k; j++) {
+            w_q[i][j] -= learning_rate * ctx.d_Q[0][j];
+            w_k[i][j] -= learning_rate * ctx.d_K[0][j];
+            w_v[i][j] -= learning_rate * ctx.d_V[0][j];
+        }
+    }
   }
 };
 
