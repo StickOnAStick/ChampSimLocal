@@ -183,7 +183,7 @@ public:
           }
         }
       }
-
+      ctx.attn_scores = attention_scores;
       // Softmax the attention scores (row-wise)
       FixedVectorMath::softmax(attention_scores);
       ctx.softmax_attn = attention_scores;
@@ -219,8 +219,8 @@ public:
 
       where W_O is of dim [d_model, d_model]
     */
-    ctx.attention_out = USE_CUDA ? FixedVectorMath::dotProductCuda(attention_out, w_o) : FixedVectorMath::dotProduct(attention_out, w_o);
-    return ctx.attention_out;
+    ctx.attn_out = USE_CUDA ? FixedVectorMath::dotProductCuda(attention_out, w_o) : FixedVectorMath::dotProduct(attention_out, w_o);
+    return ctx.attn_out;
   }
 
   FixedVector<FixedVector<float>> FFLayer(ForwardContext& ctx, FixedVector<FixedVector<float>>& input) override {
@@ -243,18 +243,19 @@ public:
     // --------------------------------------------------
 
     FixedVector<FixedVector<float>> hidden = USE_CUDA ? FixedVectorMath::linearCuda(input, w_ff1, b_ff1) : FixedVectorMath::linear(input, w_ff1, b_ff1);
-    ctx.ff_hidden = hidden;
+    ctx.ffnIntermediate = hidden;
     //---------------------------------------------------
     // 2.) Relu in place
     //---------------------------------------------------
     FixedVectorMath::relu(hidden);
+    ctx.ffnActivated = hidden;
     //---------------------------------------------------
     // 3.) output = hidden * w_ff2 + b_ff2
     //     => output: shapre [seq_len, d_model]
     //---------------------------------------------------
     FixedVector<FixedVector<float>> output = USE_CUDA ? FixedVectorMath::linearCuda(hidden, w_ff2, b_ff2) : FixedVectorMath::linear(hidden, w_ff2, b_ff2);
-    ctx.ff_out = output;
-    return output;
+    ctx.ffnOut = output;
+    return ctx.ffnOut;
   }
 
   float pooledOutput(ForwardContext& ctx, FixedVector<FixedVector<float>>& input) override {
@@ -284,21 +285,22 @@ public:
     ctx.pooled = pooled;
 
     //--------------------------------------------------------
-    // 2.) Compute logits
+    // 2.) Compute logit
     //     => [1]
     //--------------------------------------------------------
-    float logits = 0.0f;
+    float logit = 0.0f;
     for(size_t i = 0; i < pooled.size(); ++i){
-      logits += pooled[i] * w_out[i];
+      logit += pooled[i] * w_out[i];
     }
-    logits += b_out;
+    logit += b_out;
+    ctx.logit = logit;
 
     //--------------------------------------------------------
     // 3.) Sigmoid activation
     //     Still don't know if this will be optimal, but we will use for the inital tests.
     //--------------------------------------------------------
-    float out = 1.0f / (1.0f + std::exp(-logits));
-    ctx.output = out;
+    float out = 1.0f / (1.0f + std::exp(-logit));
+    ctx.out = out;
 
     return out;
   }
@@ -320,6 +322,7 @@ public:
     FixedVector<FixedVector<float>> MMA_out = this->MALayer(ctx, true);
     FixedVectorMath::add(MMA_out, this->sequence_history); // Result stored in MMA_Out
     FixedVectorMath::normalize(MMA_out);
+    ctx.ffnInput = MMA_out;
 
     /*
       Feed-Forward Layer
@@ -327,6 +330,7 @@ public:
     FixedVector<FixedVector<float>> FF_out = this->FFLayer(ctx, MMA_out);
     FixedVectorMath::add(FF_out, MMA_out);
     FixedVectorMath::normalize(FF_out);
+    ctx.ffnOut = FF_out;
 
     float out = this->pooledOutput(ctx, FF_out);
 
@@ -336,8 +340,42 @@ public:
   }
 
   void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate){
-    // Compute BCE loss gradient w.r.t. output
-    float y_pred = ctx.output;
+    
+    float p = ctx.out;
+    float logit = ctx.logit;
+
+    /*
+      Output (pooling) backwards
+    */
+
+    // Compute inital gradient from loss (dL / dLogit)
+    float dL_dLogit = p - y_true;
+
+    // Gradients for output layer weights and bias
+    FixedVector<float> grad_w_out = ctx.pooled * dL_dLogit; // constribution of each hidden feature, [d_model]
+    float grad_b_out = dL_dLogit;
+
+    // Update output layer parameters (SGD update)
+    for (size_t i = 0; i < w_out.size(); ++i){
+      w_out[i] -= learning_rate * grad_b_out;
+    }
+    b_out -= learning_rate * grad_b_out;
+
+    // Gradient of the pooled input vector (for further propagation)
+    FixedVector<float> grad_pooled = FixedVector<float>(d_model, 0.0f);
+    for (size_t i = 0; i < grad_pooled.size(); ++i){
+      grad_pooled[i] = w_out[i] * dL_dLogit;
+    }
+    // Grad_pooled == dL / dh_pooled, the gradient of the loss with respect to the final hidden states
+
+
+    /*
+      Feed Forward Backwards
+    */
+    // Gradient matrix for the input sequence
+    FixedVector<FixedVector<float>> grad_ffn_out = FixedVector(sequence_len, FixedVector())
+
+
     ctx.d_logits = (y_pred - y_true) / (y_pred * (1 - y_pred)); // dL/dy * dy/dz
     
     // Backprop through final pooling layer

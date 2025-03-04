@@ -17,59 +17,40 @@ using json = nlohmann::json;
 struct ForwardContext {
   // Memoization of forward pass for fast backward pass 
 
+  FixedVector<FixedVector<float>> input;
+
   // MMA Attention Intermediate results - Q, K, V = [seq_len, d_model]
-  FixedVector<FixedVector<float>> Q;
-  FixedVector<FixedVector<float>> K;
-  FixedVector<FixedVector<float>> V;
+  FixedVector<FixedVector<float>> Q, K, V; // [seq_len, d_head]
 
-  FixedVector<FixedVector<float>> softmax_attn;       // Softmax(QK^T / sqrt(d_k))
-  FixedVector<FixedVector<float>> attention_out;      // Before W_O
-
-  // Post attention Residual + norm
-  FixedVector<FixedVector<float>> pre_attention_layernorm; // LayerNorm input
-  FixedVector<FixedVector<float>> attention_residual;
+  FixedVector<FixedVector<float>> attn_scores;       // before softmax [seq_len, seq_len]
+  FixedVector<FixedVector<float>> softmax_attn;      // after Softmax  [seq_len, seq_len]
+  FixedVector<FixedVector<float>> attn_out;          // After V        [seq_len, d_model]
 
   // Feed Forward
-  FixedVector<FixedVector<float>> ff_input;
-  FixedVector<FixedVector<float>> ff_pre_activation;  // in * w_ff1 + b_ff1 (before activation)
-  FixedVector<FixedVector<float>> ff_hidden;         // after activation
-  FixedVector<FixedVector<float>> ff1_bias_out;      // (optional) after first linear + bias
-  FixedVector<FixedVector<float>> ff_out;           // after second linear
+  FixedVector<FixedVector<float>> ffnInput; // Input after attn + residual [seq_len, d_model]
+  FixedVector<FixedVector<float>> ffnIntermediate; // First FFN linear Layer (pre-activation)
+  FixedVector<FixedVector<float>> ffnActivated; 
+  FixedVector<FixedVector<float>> ffnOut; // Output of the second ffn linear layer (pre-residual)
 
-  // Post FF residual + norm
-  FixedVector<FixedVector<float>> pre_ff_layernorm; // LayerNorm input
-  FixedVector<FixedVector<float>> ff_residual;
-
-  // Final LayerNorm Pooling + logits 
-  FixedVector<float> pooled; // [d_model]
-  float logits;
-  float output;    
-
-  // Optional: LayerNorm parameters (might use later)
-  FixedVector<float> layernorm_gamma; 
-  FixedVector<float> layernorm_beta;
+  FixedVector<float> pooled; // Pooled Sequence represenation [d_model]
+  float logit; // Scalar logit (output pre-activation)
+  float out; // Sigmoid Output
 
   // Meaningful default constructor -- Be considerate when changing d_model, seq_len 
   ForwardContext(size_t seq_len = 24, size_t d_model = 70) 
       : Q(seq_len, FixedVector<float>(d_model, 0.0f)),
         K(seq_len, FixedVector<float>(d_model, 0.0f)),
         V(seq_len, FixedVector<float>(d_model, 0.0f)),
-        scaled_attn_scores(seq_len, FixedVector<float>(seq_len, 0.0f)),
+        attn_scores(seq_len, FixedVector<float>(seq_len, 0.0f)),
         softmax_attn(seq_len, FixedVector<float>(seq_len, 0.0f)),
-        attention_scores(seq_len, FixedVector<float>(seq_len, 0.0f)),
-        attention_out(seq_len, FixedVector<float>(d_model, 0.0f)),
-        attn_projected(seq_len, FixedVector<float>(d_model, 0.0f)),
-        pre_attention_layernorm(seq_len, FixedVector<float>(d_model, 0.0f)),
-        attention_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
-        ff_pre_activation(seq_len, FixedVector<float>(d_model, 0.0f)),
-        ff_hidden(seq_len, FixedVector<float>(d_model, 0.0f)),
-        ff1_bias_out(seq_len, FixedVector<float>(d_model, 0.0f)),
-        ff_out(seq_len, FixedVector<float>(d_model, 0.0f)),
-        pre_ff_layernorm(seq_len, FixedVector<float>(d_model, 0.0f)),
-        ff_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
+        attn_out(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ffnInput(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ffnIntermediate(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ffnOut(seq_len,FixedVector<float>(d_model, 0.0f)),
         pooled(d_model, 0.0f),
-        layernorm_gamma(d_model, 0.0f),
-        layernorm_beta(d_model, 0.0f) {}
+        logit(0.0f),
+        out(0.0f){};
+        
 };
 
 class TransformerBase
@@ -126,6 +107,7 @@ public:
     num_ma_heads = config["num_ma_heads"];
     num_mma_heads = config["num_mma_heads"];
     dropout_rate = config["dropout_rate"];
+    // Add learning rate
     sequence_len = config["sequence_len"]; // 24
     weights_file = config["weights_file"];
     if (d_model % num_mma_heads || d_model % num_ma_heads){
