@@ -78,13 +78,13 @@ public:
     /*
       Attention per-head = softMax( QK^T / sqrt(d_k) + M ) V
 
-      Q: Query Matrix (seq_len x d_k)  = XW^Q
-      K: Key Matrix   (seq_len x d_k)  = XW^K
-      V: Value Matrix (seq_len x d_v)  = XW^V
-      M: Mask Matrix  (seq_len x seq_len)
+      Q: Query Matrix (sequence_len x d_k)  = XW^Q
+      K: Key Matrix   (sequence_len x d_k)  = XW^K
+      V: Value Matrix (sequence_len x d_v)  = XW^V
+      M: Mask Matrix  (sequence_len x sequence_len)
 
       d_k: Dimensionality of key/query == d_model / num_heads(h)
-      seq_len: Sequence length of our model
+      sequence_len: Sequence length of our model
 
       Multi-Headed:
           MultiHead(Q,K,V) = Concat(head1, head2,...,head_h)W^O
@@ -93,7 +93,7 @@ public:
           W^(Q,K,V)_i: Learnable weight matricies for each head (d_model x d_k)
           W^O: Output projection Weight matrix ((h * d_v) x d_model)
 
-          Output = (seq_len x d_model)
+          Output = (sequence_len x d_model)
     */
 
     if (this->d_model % this->num_ma_heads != 0){
@@ -114,12 +114,12 @@ public:
       ---------------------------------
       Using pre-loaded w_q, w_k, w_v weight matricies we construct Q, K, V vectors 
 
-      Q, K, V = seq_len * w_q,k,v
+      Q, K, V = sequence_len * w_q,k,v
       ---------------------------------------
       Dimensions:
-      - sequence_history: [seq_len, d_model]
+      - sequence_history: [sequence_len, d_model]
       - w_q, w_v, w_k: [d_model, d_q] [d_model, d_k] [d_model, d_v]
-      - Q, K, V:  [seq_len, d_q] [seq_len, d_v]
+      - Q, K, V:  [sequence_len, d_q] [sequence_len, d_v]
     */
     
     ctx.Q = USE_CUDA ? FixedVectorMath::dotProductCuda(sequence_history, w_q) : FixedVectorMath::dotProduct(sequence_history, w_q);
@@ -189,7 +189,7 @@ public:
       ctx.softmax_attn = attention_scores;
 
       // Compute head_out = attention_scores * V_head
-      // [seq_len, d_head]
+      // [sequence_len, d_head]
       FixedVector<FixedVector<float>> head_out(sequence_len, FixedVector<float>(d_head, 0.0f));
       for(int i = 0; i < sequence_len; ++i){    // Implemented Mul won't work here
         for(int j = 0; j < sequence_len; ++j){
@@ -212,7 +212,7 @@ public:
       }
     }
     /* 
-      We now have concat(head_0, head_1, ... head_h) of dim [seq_len, d_model]
+      We now have concat(head_0, head_1, ... head_h) of dim [sequence_len, d_model]
       Now apply the output weight matrix
       
       output = concat(head_0...head_h)*W_O 
@@ -228,18 +228,18 @@ public:
       FFN(x) = ReLU(0, xW_1 + b_1)W_2 + b_2
 
       Matrix sizes:
-        - in/out: [seq_len, d_model]
+        - in/out: [sequence_len, d_model]
         - w_ff1: [d_model, d_ff]
         - b_ff1: [d_ff]
         - w_ff2: [d_ff, d_model]
         - b_ff2: [d_model]
 
-        NOTE: The output is of size [seq_len, d_model], not the final prediction d_out [1]
+        NOTE: The output is of size [sequence_len, d_model], not the final prediction d_out [1]
     */
 
     // --------------------------------------------------
     // 1) hidden = input * w_ff1 + b_ff1
-    //    => hidden: shape [seq_len, d_ff]
+    //    => hidden: shape [sequence_len, d_ff]
     // --------------------------------------------------
 
     FixedVector<FixedVector<float>> hidden = USE_CUDA ? FixedVectorMath::linearCuda(input, w_ff1, b_ff1) : FixedVectorMath::linear(input, w_ff1, b_ff1);
@@ -251,7 +251,7 @@ public:
     ctx.ffnActivated = hidden;
     //---------------------------------------------------
     // 3.) output = hidden * w_ff2 + b_ff2
-    //     => output: shapre [seq_len, d_model]
+    //     => output: shapre [sequence_len, d_model]
     //---------------------------------------------------
     FixedVector<FixedVector<float>> output = USE_CUDA ? FixedVectorMath::linearCuda(hidden, w_ff2, b_ff2) : FixedVectorMath::linear(hidden, w_ff2, b_ff2);
     ctx.ffnOut = output;
@@ -262,10 +262,10 @@ public:
     /*
       Reduce the entire transformer state to a single prediction. 
 
-      input = [seq_len, d_model]
+      input = [sequence_len, d_model]
       out   = [1]
 
-      pooled = 1/seq_len Σ h_i   // 1 to seq_len
+      pooled = 1/sequence_len Σ h_i   // 1 to sequence_len
       logits = w_out^T * pooled + b_out
     */
 
@@ -279,7 +279,7 @@ public:
         pooled[j] += input[i][j];
       }
     }
-    for(size_t i = 0; i < pooled.size(); ++i){        // 1/seq_len
+    for(size_t i = 0; i < pooled.size(); ++i){        // 1/sequence_len
       pooled[i] /= (float)this->sequence_len;
     }
     ctx.pooled = pooled;
@@ -339,118 +339,446 @@ public:
     return bool(out);
   }
 
-  void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate){
+  void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate = 0.001f){
     
-    float p = ctx.out;
-    float logit = ctx.logit;
+    // Layer Norm. Backwards pass helper lambda function
+    auto layerNormBackward = [&](  // *[&] is a lambda function which captures all variables out-of-scope by reference
+      const FixedVector<FixedVector<float>>& x,  // LN Input
+      const FixedVector<FixedVector<float>>& y,  // LN Output
+      const FixedVector<float>& mean_vec,        // The mean of the i_th row of the sequence [d_model]
+      const FixedVector<float>& var_vec,         // Variance of the i_th row
+      const FixedVector<FixedVector<float>>& dL_dy, // Grad wrt LN Out
+      FixedVector<FixedVector<float>>& dL_dx,       // to fill
+      float epsilon
+    ){
+      for(int i = 0; i < this->sequence_len; i++){
+        float mean_i = mean_vec[i];
+        float var_i  = var_vec[i];
+        float inv_std = 1.0f / std::sqrt(var_i + epsilon);
 
-    /*
-      Output (pooling) backwards
-    */
+        // We'll need sums across the feature dimension.
+        float sum_dL_dy        = 0.0f;
+        float sum_dL_dy_times_y= 0.0f;
 
-    // Compute inital gradient from loss (dL / dLogit)
-    float dL_dLogit = p - y_true;
+        for(int k = 0; k < d_model; k++){
+            sum_dL_dy         += dL_dy[i][k];
+            sum_dL_dy_times_y += dL_dy[i][k] * y[i][k]; 
+        }
 
-    // Gradients for output layer weights and bias
-    FixedVector<float> grad_w_out = ctx.pooled * dL_dLogit; // constribution of each hidden feature, [d_model]
-    float grad_b_out = dL_dLogit;
+        // Now compute dL/dx for each feature in row i
+        for(int k = 0; k < d_model; k++){
+            float grad_yk = dL_dy[i][k];   // dL/dy[i][k]
+            float yk      = y[i][k];       // LN output
+            // LN backprop formula:
+            // dL/dx = (1 / inv_std) * [ grad_yk
+            //    - (1/d_model)*sum_dL_dy
+            //    - yk*(1/d_model)*sum_dL_dy_times_y ]
+            float term = grad_yk
+                         - (sum_dL_dy / (float)d_model)
+                         - (yk * sum_dL_dy_times_y / (float)d_model);
+            dL_dx[i][k] = inv_std * term;
+          }
+        }
+    };
 
-    // Update output layer parameters (SGD update)
-    for (size_t i = 0; i < w_out.size(); ++i){
-      w_out[i] -= learning_rate * grad_b_out;
+    /****************************************************
+     * 0) Derivative of BCE Loss wrt logit
+     ****************************************************/
+    float dL_dlogit = (ctx.out - y_true);  // out = sigmoid(logit)
+
+    /****************************************************
+     * 1) Backprop from logit -> W_logit, b_logit, pooled
+     ****************************************************/
+    // Suppose we have class-member: W_logit (size d_model), b_logit (scalar)
+    // We'll accumulate grads in local arrays:
+    static FixedVector<float> W_logit_grad = FixedVector<float>(d_model, 0.0f); 
+    static float b_logit_grad = 0.0f;
+
+    // dL/dW_logit[k] = dL/dlogit * pooled[k]
+    // dL/db_logit    = dL/dlogit
+    // dL/dpooled[k]  = dL/dlogit * W_logit[k]
+    FixedVector<float> dL_dpooled(d_model, 0.0f);
+    for(int k = 0; k < d_model; k++){
+        W_logit_grad[k] = dL_dlogit * this->w_out[k];
+        // Actually we must correct the above line:
+        //   The gradient wrt W_logit is (dL/dlogit * pooled[k])
+        //   So:
+        W_logit_grad[k] = dL_dlogit * ctx.pooled[k];
     }
-    b_out -= learning_rate * grad_b_out;
+    b_logit_grad = dL_dlogit;
 
-    // Gradient of the pooled input vector (for further propagation)
-    FixedVector<float> grad_pooled = FixedVector<float>(d_model, 0.0f);
-    for (size_t i = 0; i < grad_pooled.size(); ++i){
-      grad_pooled[i] = w_out[i] * dL_dLogit;
+    for(int k = 0; k < d_model; k++){
+        dL_dpooled[k] = dL_dlogit * this->w_out[k];
     }
-    // Grad_pooled == dL / dh_pooled, the gradient of the loss with respect to the final hidden states
 
-
-    /*
-      Feed Forward Backwards
-    */
-    // Gradient matrix for the input sequence
-    FixedVector<FixedVector<float>> grad_ffn_out = FixedVector(sequence_len, FixedVector())
-
-
-    ctx.d_logits = (y_pred - y_true) / (y_pred * (1 - y_pred)); // dL/dy * dy/dz
-    
-    // Backprop through final pooling layer
-    for (size_t i = 0; i < d_model; i++) {
-        ctx.d_pooled[i] = ctx.d_logits * w_out[i];
-    }
-    
-    // Backprop through final layer norm
-    for (size_t i = 0; i < d_model; i++) {
-        ctx.d_pooled[i] *= ctx.layernorm_gamma[i];
-    }
-    
-    // Distribute gradients back to sequence level
-    for (size_t i = 0; i < sequence_len; i++) {
-        for (size_t j = 0; j < d_model; j++) {
-            ctx.d_ff_out[i][j] = ctx.d_pooled[j] / sequence_len;
+    /****************************************************
+     * 2) Backprop from pooled -> ff_normed
+     *    pooled[k] = average of ff_normed[i][k] over sequence_len
+     ****************************************************/
+    // So dL/dff_normed[i][k] += dL/dpooled[k] / sequence_len
+    FixedVector<FixedVector<float>> dL_dFF_normed(sequence_len, FixedVector<float>(d_model, 0.0f));
+    for(int i = 0; i < sequence_len; i++){
+        for(int k = 0; k < d_model; k++){
+            dL_dFF_normed[i][k] = dL_dpooled[k] / (float)sequence_len;
         }
     }
-    
-    // Backprop through final layer norm (ff_residual)
-    for (size_t i = 0; i < ctx.ff_hidden.size(); i++) {
-        for (size_t j = 0; j < d_model; j++) {
-            ctx.d_ff_hidden[i][j] = ctx.d_ff_out[i][j];
-            if (ctx.ff_hidden[i][j] <= 0) {
-                ctx.d_ff_hidden[i][j] = 0; // ReLU derivative
+
+    /****************************************************
+     * 3) LayerNorm backward on the FF block
+     *    FF block output is ctx.ff_normed => LN output
+     *    LN input was ctx.ff_post_residual => (ff_out + attn_normed)
+     ****************************************************/
+    FixedVector<FixedVector<float>> dL_dFF_post_resid(sequence_len, FixedVector<float>(d_model, 0.0f));
+    // LN backward:
+    layerNormBackward(
+        ctx.ff_post_residual,   // LN input
+        ctx.ff_normed,          // LN output
+        ctx.ff_mean_i,          // means
+        ctx.ff_var_i,           // vars
+        dL_dFF_normed,          // gradient from above
+        dL_dFF_post_resid,      // result => dL/d LN input
+        1e-5f
+    );
+
+    /****************************************************
+     * 3a) Split gradient among (ff_out) and (attn_normed) residual
+     ****************************************************/
+    // forward did: ff_post_residual = ff_out + attn_normed
+    // so dL/dff_out_raw[i][k] += dL_dFF_post_resid[i][k]
+    //    dL/dattn_normed[i][k] += dL_dFF_post_resid[i][k]
+    // We haven't defined dL_dff_out_raw or dL_dAttn_normed yet, so let's do it:
+    FixedVector<FixedVector<float>> dL_dFF_out_raw(sequence_len, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> dL_dAttn_normed(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    for(int i = 0; i < sequence_len; i++){
+        for(int k = 0; k < d_model; k++){
+            float g = dL_dFF_post_resid[i][k];
+            dL_dFF_out_raw[i][k]    += g;  // to feed-forward sublayer out
+            dL_dAttn_normed[i][k]   += g;  // to MHA LN output
+        }
+    }
+
+    /****************************************************
+     * 4) Backprop the feed-forward sublayer
+     *    From dL_dFF_out_raw => (linear -> ReLU -> linear).
+     *    We have w_ff2, b_ff2, then w_ff1, b_ff1, etc.
+     *    We also have ff_hidden in ctx (pre-RELU).
+     ****************************************************/
+    // We'll keep local gradients for w_ff2, b_ff2, w_ff1, b_ff1
+    static FixedVector<FixedVector<float>> w_ff2_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f));
+    static FixedVector<float> b_ff2_grad = FixedVector<float>(d_model, 0.0f);
+    static FixedVector<FixedVector<float>> w_ff1_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f));
+    static FixedVector<float> b_ff1_grad = FixedVector<float>(d_model, 0.0f);
+
+    // We'll also need gradient wrt ff_hidden (post-relu):
+    FixedVector<FixedVector<float>> dL_dff_hidden(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    // The final FF layer was: ff_out = ff_hidden * w_ff2 + b_ff2
+    // dL/dff_out_raw = dL_dFF_out_raw
+    for(int i = 0; i < sequence_len; i++){
+        for(int j = 0; j < d_model; j++){
+            float grad_out_ij = dL_dFF_out_raw[i][j];
+            // b_ff2
+            b_ff2_grad[j] += grad_out_ij;
+
+            // w_ff2 => shape [d_model, d_model]
+            // ff_hidden[i][k] * w_ff2[k][j]
+            for(int k = 0; k < d_model; k++){
+                w_ff2_grad[k][j] += grad_out_ij * ctx.ff_hidden[i][k];
             }
         }
     }
-    
-    // Backprop through first FF layer
-    for (size_t i = 0; i < ctx.ff_pre_activation.size(); i++) {
-        for (size_t j = 0; j < d_ff; j++) {
-            ctx.d_ff_pre_activation[i][j] = ctx.d_ff_hidden[i][j] * (ctx.ff_pre_activation[i][j] > 0);
+
+    // dL/dff_hidden = sum_j( dL/dff_out[i][j] * w_ff2[k][j] ) for each k
+    // Then ReLU( ff_hidden ), so we must gate with ReLU derivative
+    for(int i = 0; i < sequence_len; i++){
+        for(int k = 0; k < d_model; k++){
+            float sum_grad = 0.0f;
+            for(int j = 0; j < d_model; j++){
+                sum_grad += dL_dFF_out_raw[i][j] * this->w_ff2[k][j];
+            }
+            // Now apply ReLU gate. In forward pass, we did in-place ReLU on ff_hidden
+            // If ff_hidden[i][k] <= 0 => gradient is 0
+            // We stored the post-activation in ctx.ff_hidden too, so let's check that:
+            if(ctx.ff_hidden[i][k] <= 0.0f) {
+                sum_grad = 0.0f;
+            }
+            dL_dff_hidden[i][k] = sum_grad;
         }
     }
-    
-    // Compute gradients for w_ff1 and b_ff1
-    for (size_t i = 0; i < d_model; i++) {
-        for (size_t j = 0; j < d_ff; j++) {
-            w_ff1[i][j] -= learning_rate * ctx.d_ff_pre_activation[0][j] * ctx.ff_residual[0][i];
-        }
-        b_ff1[i] -= learning_rate * ctx.d_ff_pre_activation[0][i];
-    }
-    
-    // Backprop through Attention Layer
-    ctx.d_attention_out = ctx.d_ff_out;
-    
-    // Backprop through multihead attention
-    for (size_t i = 0; i < sequence_len; i++) {
-        for (size_t j = 0; j < d_model; j++) {
-            for (size_t k = 0; k < sequence_len; k++) {
-                ctx.d_softmax_attn[i][k] += ctx.d_attention_out[i][j] * ctx.V[k][j];
+
+    // Now backprop the first FF layer: ff_hidden = ffnInput * w_ff1 + b_ff1
+    // with ffnInput = ctx.ffnInput ( = attn_normed in forward code).
+    FixedVector<FixedVector<float>> dL_dFFN_input(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    for(int i = 0; i < sequence_len; i++){
+        for(int j = 0; j < d_model; j++){
+            float grad_hidden_ij = dL_dff_hidden[i][j];
+            b_ff1_grad[j] += grad_hidden_ij;
+            for(int k = 0; k < d_model; k++){
+                w_ff1_grad[k][j] += grad_hidden_ij * ctx.ffnInput[i][k];
+                dL_dFFN_input[i][k] += grad_hidden_ij * this->w_ff1[k][j];
             }
         }
     }
-    
-    // Compute d_Q, d_K, d_V
-    for (size_t i = 0; i < sequence_len; i++) {
-        for (size_t j = 0; j < d_model; j++) {
-            for (size_t k = 0; k < sequence_len; k++) {
-                ctx.d_Q[i][j] += ctx.d_softmax_attn[i][k] * ctx.K[k][j];
-                ctx.d_K[i][j] += ctx.d_softmax_attn[k][i] * ctx.Q[k][j];
-                ctx.d_V[i][j] += ctx.d_attention_out[i][j] * ctx.softmax_attn[i][j];
+
+    // That gradient flows into dL_dAttn_normed as well (the FF input).
+    // But we’ve already been adding to dL_dAttn_normed from the residual,
+    // so we now combine:
+    for(int i = 0; i < sequence_len; i++){
+        for(int k = 0; k < d_model; k++){
+            dL_dAttn_normed[i][k] += dL_dFFN_input[i][k];
+        }
+    }
+
+    /****************************************************
+     * 5) Now handle LN backward for the MHA output
+     *    attn_normed = LN( attn_post_residual )
+     *    attn_post_residual = attn_out + original_input_seq
+     *    The "original_input_seq" for a single-layer decoder might be
+     *    the embedding or the input to the block. We'll call it dL_dInput.
+     ****************************************************/
+    FixedVector<FixedVector<float>> dL_dAttn_post_resid(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    layerNormBackward(
+        ctx.attn_post_residual,  // LN input
+        ctx.attn_normed,         // LN output
+        ctx.attn_mean_i,
+        ctx.attn_var_i,
+        dL_dAttn_normed,         // grad from feed-forward residual
+        dL_dAttn_post_resid,     // result => gradient w.r.t. LN input
+        1e-5f
+    );
+
+    // Now that splits into attn_out + input_sequence
+    // We'll define dL_dAttn_out and dL_dInputSeq
+    // If your original input is "ctx.input" or "sequence_history," adapt accordingly:
+    FixedVector<FixedVector<float>> dL_dAttn_out(sequence_len, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> dL_dInputSeq(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    for(int i = 0; i < sequence_len; i++){
+        for(int k = 0; k < d_model; k++){
+            float g = dL_dAttn_post_resid[i][k];
+            dL_dAttn_out[i][k] += g;
+            dL_dInputSeq[i][k] += g;  // gradient w.r.t. the original input to MHA sub-layer
+        }
+    }
+
+    /****************************************************
+     * 6) Backprop multi-head attention
+     *    final MHA out: attention_out * w_o => attn_out
+     *    So we do the matrix multiply backward first:
+     ****************************************************/
+    static FixedVector<FixedVector<float>> w_o_grad(d_model, FixedVector<float>(d_model, 0.0f));
+
+    // dL_dAttentionOut is shape [sequence_len, d_model]
+    FixedVector<FixedVector<float>> dL_dAttentionOut(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    // attn_out[i][j] = sum_{k} attention_out[i][k] * w_o[k][j]
+    for(int i = 0; i < sequence_len; i++){
+        for(int j = 0; j < d_model; j++){
+            float grad_attn_out_ij = dL_dAttn_out[i][j];
+            // accumulate w_o grad
+            for(int k = 0; k < d_model; k++){
+                w_o_grad[k][j] += grad_attn_out_ij * ctx.attention_out[i][k];
+            }
+            // pass back to attention_out
+            for(int k = 0; k < d_model; k++){
+                dL_dAttentionOut[i][k] += grad_attn_out_ij * this->w_o[k][j];
             }
         }
     }
-    
-    // Update Attention Weights
-    for (size_t i = 0; i < d_model; i++) {
-        for (size_t j = 0; j < d_k; j++) {
-            w_q[i][j] -= learning_rate * ctx.d_Q[0][j];
-            w_k[i][j] -= learning_rate * ctx.d_K[0][j];
-            w_v[i][j] -= learning_rate * ctx.d_V[0][j];
+
+    /****************************************************
+     * 7) Now handle each MHA head:
+     *    We have Q,K,V in ctx.Q, ctx.K, ctx.V
+     *    The final was attention_out = concat(head_0..head_n)
+     ****************************************************/
+    FixedVector<FixedVector<float>> dL_dQ(sequence_len, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> dL_dK(sequence_len, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> dL_dV(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    int d_head = d_model / this->num_ma_heads;
+
+    for(int head = 0; head < this->num_ma_heads; head++){
+        // slice dL_dHead_out from dL_dAttentionOut
+        FixedVector<FixedVector<float>> dL_dHead_out(sequence_len, FixedVector<float>(d_head, 0.0f));
+        for(int i = 0; i < sequence_len; i++){
+            for(int d = 0; d < d_head; d++){
+                dL_dHead_out[i][d] = dL_dAttentionOut[i][head*d_head + d];
+            }
+        }
+
+        // We had head_out[i][d] = sum_j( softmax_attn[i][j] * V_head[j][d] )
+        // => dL/dsoftmax_attn[i][j], dL/dV_head[j][d]
+
+        // Build local dL_dV_head, dL_dSoftmax
+        FixedVector<FixedVector<float>> dL_dV_head(sequence_len, FixedVector<float>(d_head, 0.0f));
+        FixedVector<FixedVector<float>> dL_dSoftmax(sequence_len, FixedVector<float>(sequence_len, 0.0f));
+
+        for(int i = 0; i < sequence_len; i++){
+            for(int d = 0; d < d_head; d++){
+                float grad_out = dL_dHead_out[i][d];
+                for(int j = 0; j < sequence_len; j++){
+                    float attn_ij = ctx.softmax_attn[i][j];
+                    // accumulate dL/dV_head
+                    dL_dV_head[j][d] += grad_out * attn_ij;
+                }
+            }
+        }
+        // also accumulate dL/dSoftmax from the product with V_head
+        for(int i = 0; i < sequence_len; i++){
+            for(int j = 0; j < sequence_len; j++){
+                float sum_d = 0.0f;
+                for(int d = 0; d < d_head; d++){
+                    float grad_out = dL_dHead_out[i][d];
+                    float v_jd     = ctx.V[j][head*d_head + d];
+                    sum_d += grad_out * v_jd;
+                }
+                dL_dSoftmax[i][j] += sum_d;
+            }
+        }
+
+        // Now backprop softmax => scores. We have a row-wise softmax.
+        // standard formula:
+        //   dL/dscores[i][j] = softmax_attn[i][j] * ( dL/dSoftmax[i][j] 
+        //     - sum_{p} dL/dSoftmax[i][p] * softmax_attn[i][p] )
+        FixedVector<FixedVector<float>> dL_dScores(sequence_len, FixedVector<float>(sequence_len, 0.0f));
+        for(int i = 0; i < sequence_len; i++){
+            // row sum
+            float rowDot = 0.0f;
+            for(int p = 0; p < sequence_len; p++){
+                rowDot += dL_dSoftmax[i][p] * ctx.softmax_attn[i][p];
+            }
+            for(int j = 0; j < sequence_len; j++){
+                float grad_softmax_ij = dL_dSoftmax[i][j];
+                float sm_ij           = ctx.softmax_attn[i][j];
+                // If masked, forward pass had sm_ij = 0 for that j => gradient ~ 0
+                dL_dScores[i][j] = sm_ij * (grad_softmax_ij - rowDot);
+            }
+        }
+
+        // scores[i][j] = (Q_head[i] dot K_head[j]) / sqrt(d_head) + mask
+        // => backprop to Q_head, K_head
+        float scale = 1.0f / std::sqrt((float)d_head);
+        FixedVector<FixedVector<float>> dL_dQ_head(sequence_len, FixedVector<float>(d_head, 0.0f));
+        FixedVector<FixedVector<float>> dL_dK_head(sequence_len, FixedVector<float>(d_head, 0.0f));
+
+        for(int i = 0; i < sequence_len; i++){
+            for(int j = 0; j < sequence_len; j++){
+                float grad_score_ij = dL_dScores[i][j];
+                // If masked, forward pass effectively sets grad to 0
+                // We'll trust that softmax + mask => no gradient flows
+                // so we won't do an explicit "if mask" check here.
+                for(int d = 0; d < d_head; d++){
+                    float q_id = ctx.Q[i][head*d_head + d];
+                    float k_jd = ctx.K[j][head*d_head + d];
+                    dL_dQ_head[i][d] += grad_score_ij * scale * k_jd;
+                    dL_dK_head[j][d] += grad_score_ij * scale * q_id;
+                }
+            }
+        }
+
+        // We already have dL_dV_head from above. Now integrate them back:
+        for(int i = 0; i < sequence_len; i++){
+            for(int d = 0; d < d_head; d++){
+                dL_dQ[i][head*d_head + d] += dL_dQ_head[i][d];
+                dL_dV[i][head*d_head + d] += dL_dV_head[i][d];
+            }
+        }
+        for(int j = 0; j < sequence_len; j++){
+            for(int d = 0; d < d_head; d++){
+                dL_dK[j][head*d_head + d] += dL_dK_head[j][d];
+            }
         }
     }
+
+    /****************************************************
+     * 8) Backprop Q,K,V => seq_history => w_q, w_k, w_v
+     ****************************************************/
+    static FixedVector<FixedVector<float>> w_q_grad(d_model, FixedVector<float>(d_model, 0.0f));
+    static FixedVector<FixedVector<float>> w_k_grad(d_model, FixedVector<float>(d_model, 0.0f));
+    static FixedVector<FixedVector<float>> w_v_grad(d_model, FixedVector<float>(d_model, 0.0f));
+
+    // We'll also accumulate gradient wrt the original input (which we might add to dL_dInputSeq)
+    // but let's define local:
+    FixedVector<FixedVector<float>> dL_dSeqHistory(sequence_len, FixedVector<float>(d_model, 0.0f));
+
+    // Q[i][j] = sum_p( input_seq[i][p] * w_q[p][j] )
+    // => w_q_grad[p][j] += sum_i( dL_dQ[i][j] * input_seq[i][p] )
+    // => dL_dSeqHistory[i][p] += dL_dQ[i][j] * w_q[p][j]
+    for(int i = 0; i < sequence_len; i++){
+        for(int j = 0; j < d_model; j++){
+            float grad_Qij = dL_dQ[i][j];
+            for(int p = 0; p < d_model; p++){
+                w_q_grad[p][j] += grad_Qij * ctx.input[i][p]; // assuming ctx.input is the "sequence_history"
+                dL_dSeqHistory[i][p] += grad_Qij * this->w_q[p][j];
+            }
+        }
+    }
+    // K
+    for(int i = 0; i < sequence_len; i++){
+        for(int j = 0; j < d_model; j++){
+            float grad_Kij = dL_dK[i][j];
+            for(int p = 0; p < d_model; p++){
+                w_k_grad[p][j] += grad_Kij * ctx.input[i][p];
+                dL_dSeqHistory[i][p] += grad_Kij * this->w_k[p][j];
+            }
+        }
+    }
+    // V
+    for(int i = 0; i < sequence_len; i++){
+        for(int j = 0; j < d_model; j++){
+            float grad_Vij = dL_dV[i][j];
+            for(int p = 0; p < d_model; p++){
+                w_v_grad[p][j] += grad_Vij * ctx.input[i][p];
+                dL_dSeqHistory[i][p] += grad_Vij * this->w_v[p][j];
+            }
+        }
+    }
+
+    // Finally, we also have dL_dInputSeq from the LN residual side,
+    // so let's add dL_dSeqHistory into that:
+    // i.e. total gradient wrt the actual input is dL_dInputSeq + dL_dSeqHistory.
+    for(int i = 0; i < sequence_len; i++){
+        for(int p = 0; p < d_model; p++){
+            dL_dInputSeq[i][p] += dL_dSeqHistory[i][p];
+        }
+    }
+
+    /****************************************************
+     * 9) Now we apply vanilla SGD updates to:
+     *    w_q, w_k, w_v, w_o,
+     *    w_ff1, b_ff1, w_ff2, b_ff2,
+     *    W_logit, b_logit,
+     *    (and if LN had gamma,beta, we’d update them, but we don't here).
+     ****************************************************/
+    // w_q
+    for(int p = 0; p < d_model; p++){
+        for(int j = 0; j < d_model; j++){
+            this->w_q[p][j] -= learning_rate * w_q_grad[p][j];
+            this->w_k[p][j] -= learning_rate * w_k_grad[p][j];
+            this->w_v[p][j] -= learning_rate * w_v_grad[p][j];
+            this->w_ff1[p][j] -= learning_rate * w_ff1_grad[p][j];
+            this->w_ff2[p][j] -= learning_rate * w_ff2_grad[p][j];
+        }
+    }
+    // w_o
+    for(int p = 0; p < d_model; p++){
+        for(int j = 0; j < d_model; j++){
+            this->w_o[p][j] -= learning_rate * w_o_grad[p][j];
+        }
+    }
+    // b_ff1, b_ff2
+    for(int j = 0; j < d_model; j++){
+        this->b_ff1[j] -= learning_rate * b_ff1_grad[j];
+        this->b_ff2[j] -= learning_rate * b_ff2_grad[j];
+    }
+    // W_logit, b_logit
+    for(int k = 0; k < d_model; k++){
+        this->w_out[k] -= learning_rate * W_logit_grad[k];
+    }
+    this->b_out -= learning_rate * b_logit_grad;
   }
 };
 
