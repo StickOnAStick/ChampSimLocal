@@ -22,27 +22,36 @@ struct ForwardContext {
   // MMA Attention Intermediate results - Q, K, V = [seq_len, d_model]
   FixedVector<FixedVector<float>> Q, K, V; // [seq_len, d_head]
 
-  FixedVector<FixedVector<float>> attn_scores;       // before softmax [seq_len, seq_len]
-  FixedVector<FixedVector<float>> softmax_attn;      // after Softmax  [seq_len, seq_len]
-  FixedVector<FixedVector<float>> attn_out;          // After V        [seq_len, d_model]
+  FixedVector<FixedVector<FixedVector<float>>> attn_scores;       // before softmax [num_heads, [seq_len, seq_len]]
+  FixedVector<FixedVector<FixedVector<float>>> softmax_attn;      // after Softmax  [num_heads, [seq_len, seq_len]]
+  FixedVector<FixedVector<FixedVector<float>>> attn_out_head;     // Before W_O     [num_heads, [seq_len, seq_len]]
+  FixedVector<FixedVector<float>> attn_out;          // After W_O        [seq_len, d_model]
+  FixedVector<FixedVector<float>> attn_post_residual;// [seq_len, d_model]
+  FixedVector<float> attn_mean_i;                    // The mean of each row vector during normalization
+  FixedVector<float> attn_var_i;                     // The variance of each row vector during normalization
 
   // Feed Forward
   FixedVector<FixedVector<float>> ffnInput; // Input after attn + residual [seq_len, d_model]
   FixedVector<FixedVector<float>> ffnIntermediate; // First FFN linear Layer (pre-activation)
   FixedVector<FixedVector<float>> ffnActivated; 
   FixedVector<FixedVector<float>> ffnOut; // Output of the second ffn linear layer (pre-residual)
+  FixedVector<FixedVector<float>> ff_post_residual; // [seq_len, d_model]
+  FixedVector<FixedVector<float>> ff_normed;        //
+  FixedVector<float> ff_mean_i;                     // The mean of each row vector during normalization
+  FixedVector<float> ff_var_i;                      // The variance of each row vector during normalization
 
   FixedVector<float> pooled; // Pooled Sequence represenation [d_model]
   float logit; // Scalar logit (output pre-activation)
   float out; // Sigmoid Output
 
   // Meaningful default constructor -- Be considerate when changing d_model, seq_len 
-  ForwardContext(size_t seq_len = 24, size_t d_model = 70) 
+  ForwardContext(size_t seq_len = 24, size_t d_model = 70, size_t num_heads = 5) 
       : Q(seq_len, FixedVector<float>(d_model, 0.0f)),
         K(seq_len, FixedVector<float>(d_model, 0.0f)),
         V(seq_len, FixedVector<float>(d_model, 0.0f)),
-        attn_scores(seq_len, FixedVector<float>(seq_len, 0.0f)),
-        softmax_attn(seq_len, FixedVector<float>(seq_len, 0.0f)),
+        attn_scores(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
+        softmax_attn(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
+        attn_out_head(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
         attn_out(seq_len, FixedVector<float>(d_model, 0.0f)),
         ffnInput(seq_len, FixedVector<float>(d_model, 0.0f)),
         ffnIntermediate(seq_len, FixedVector<float>(d_model, 0.0f)),

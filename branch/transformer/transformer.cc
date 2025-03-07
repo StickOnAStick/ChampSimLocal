@@ -183,10 +183,10 @@ public:
           }
         }
       }
-      ctx.attn_scores = attention_scores;
+      ctx.attn_scores[head] = attention_scores;
       // Softmax the attention scores (row-wise)
       FixedVectorMath::softmax(attention_scores);
-      ctx.softmax_attn = attention_scores;
+      ctx.softmax_attn[head] = attention_scores;
 
       // Compute head_out = attention_scores * V_head
       // [sequence_len, d_head]
@@ -198,6 +198,7 @@ public:
           }
         }
       }
+      ctx.attn_out_head[head] = head_out;
 
       /*
         Step 4: Concat all heads
@@ -321,7 +322,8 @@ public:
     */
     FixedVector<FixedVector<float>> MMA_out = this->MALayer(ctx, true);
     FixedVectorMath::add(MMA_out, this->sequence_history); // Result stored in MMA_Out
-    FixedVectorMath::normalize(MMA_out);
+    ctx.attn_post_residual = MMA_out;
+    FixedVectorMath::normalize(MMA_out, ctx.attn_mean_i, ctx.attn_var_i);
     ctx.ffnInput = MMA_out;
 
     /*
@@ -329,7 +331,7 @@ public:
     */
     FixedVector<FixedVector<float>> FF_out = this->FFLayer(ctx, MMA_out);
     FixedVectorMath::add(FF_out, MMA_out);
-    FixedVectorMath::normalize(FF_out);
+    FixedVectorMath::normalize(FF_out, ctx.ff_mean_i, ctx.ff_var_i);
     ctx.ffnOut = FF_out;
 
     float out = this->pooledOutput(ctx, FF_out);
@@ -391,8 +393,8 @@ public:
      ****************************************************/
     // Suppose we have class-member: W_logit (size d_model), b_logit (scalar)
     // We'll accumulate grads in local arrays:
-    static FixedVector<float> W_logit_grad = FixedVector<float>(d_model, 0.0f); 
-    static float b_logit_grad = 0.0f;
+    FixedVector<float> W_logit_grad = FixedVector<float>(d_model, 0.0f); 
+    float b_logit_grad = 0.0f;
 
     // dL/dW_logit[k] = dL/dlogit * pooled[k]
     // dL/db_logit    = dL/dlogit
@@ -465,10 +467,10 @@ public:
      *    We also have ff_hidden in ctx (pre-RELU).
      ****************************************************/
     // We'll keep local gradients for w_ff2, b_ff2, w_ff1, b_ff1
-    static FixedVector<FixedVector<float>> w_ff2_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f));
-    static FixedVector<float> b_ff2_grad = FixedVector<float>(d_model, 0.0f);
-    static FixedVector<FixedVector<float>> w_ff1_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f));
-    static FixedVector<float> b_ff1_grad = FixedVector<float>(d_model, 0.0f);
+    FixedVector<FixedVector<float>> w_ff2_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f));
+    FixedVector<float> b_ff2_grad = FixedVector<float>(d_model, 0.0f);
+    FixedVector<FixedVector<float>> w_ff1_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f));
+    FixedVector<float> b_ff1_grad = FixedVector<float>(d_model, 0.0f);
 
     // We'll also need gradient wrt ff_hidden (post-relu):
     FixedVector<FixedVector<float>> dL_dff_hidden(sequence_len, FixedVector<float>(d_model, 0.0f));
@@ -484,7 +486,7 @@ public:
             // w_ff2 => shape [d_model, d_model]
             // ff_hidden[i][k] * w_ff2[k][j]
             for(int k = 0; k < d_model; k++){
-                w_ff2_grad[k][j] += grad_out_ij * ctx.ff_hidden[i][k];
+                w_ff2_grad[k][j] += grad_out_ij * ctx.ffnIntermediate[i][k];
             }
         }
     }
@@ -499,8 +501,8 @@ public:
             }
             // Now apply ReLU gate. In forward pass, we did in-place ReLU on ff_hidden
             // If ff_hidden[i][k] <= 0 => gradient is 0
-            // We stored the post-activation in ctx.ff_hidden too, so let's check that:
-            if(ctx.ff_hidden[i][k] <= 0.0f) {
+            // We stored the post-activation in ctx.ffnIntermediate too, so let's check that:
+            if(ctx.ffnIntermediate[i][k] <= 0.0f) {
                 sum_grad = 0.0f;
             }
             dL_dff_hidden[i][k] = sum_grad;
@@ -542,7 +544,7 @@ public:
 
     layerNormBackward(
         ctx.attn_post_residual,  // LN input
-        ctx.attn_normed,         // LN output
+        ctx.ffnInput,         // LN output
         ctx.attn_mean_i,
         ctx.attn_var_i,
         dL_dAttn_normed,         // grad from feed-forward residual
@@ -569,7 +571,7 @@ public:
      *    final MHA out: attention_out * w_o => attn_out
      *    So we do the matrix multiply backward first:
      ****************************************************/
-    static FixedVector<FixedVector<float>> w_o_grad(d_model, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> w_o_grad(d_model, FixedVector<float>(d_model, 0.0f));
 
     // dL_dAttentionOut is shape [sequence_len, d_model]
     FixedVector<FixedVector<float>> dL_dAttentionOut(sequence_len, FixedVector<float>(d_model, 0.0f));
@@ -580,7 +582,7 @@ public:
             float grad_attn_out_ij = dL_dAttn_out[i][j];
             // accumulate w_o grad
             for(int k = 0; k < d_model; k++){
-                w_o_grad[k][j] += grad_attn_out_ij * ctx.attention_out[i][k];
+                w_o_grad[k][j] += grad_attn_out_ij * ctx.attn_out[i][k];
             }
             // pass back to attention_out
             for(int k = 0; k < d_model; k++){
@@ -696,9 +698,9 @@ public:
     /****************************************************
      * 8) Backprop Q,K,V => seq_history => w_q, w_k, w_v
      ****************************************************/
-    static FixedVector<FixedVector<float>> w_q_grad(d_model, FixedVector<float>(d_model, 0.0f));
-    static FixedVector<FixedVector<float>> w_k_grad(d_model, FixedVector<float>(d_model, 0.0f));
-    static FixedVector<FixedVector<float>> w_v_grad(d_model, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> w_q_grad(d_model, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> w_k_grad(d_model, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> w_v_grad(d_model, FixedVector<float>(d_model, 0.0f));
 
     // We'll also accumulate gradient wrt the original input (which we might add to dL_dInputSeq)
     // but let's define local:
