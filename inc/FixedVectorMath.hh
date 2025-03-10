@@ -34,7 +34,12 @@ namespace FixedVectorMath {
 
     // Normalize the fixed vector
     template <typename T>
-    void normalize(FixedVector<T>& vec) {
+    void normalize(
+        FixedVector<T>& vec, 
+        T& mean_out, 
+        T& var_out,
+        T epsilon = 1e-5 // Prevents div by 0 errors.
+    ) {
         T sum_of_squares = 0;
         for (std::size_t i = 0; i < vec.size(); i++) {
             sum_of_squares += vec[i] * vec[i];
@@ -56,9 +61,15 @@ namespace FixedVectorMath {
     // Normalize each row in the matrix
     // In transformer logic, we do normalization by row
     template <typename T>
-    void normalize(FixedVector<FixedVector<T>>& matrix) {
+    void normalize(
+        FixedVector<FixedVector<T>>& matrix,
+        FixedVector<T>& means,
+        FixedVector<T>& vars,
+        T epsilon = 1e-5 // Prevent div by 0 errors
+        
+    ) {
         for (std::size_t i = 0; i < matrix.size(); i++) {
-            normalize(matrix[i]);
+            normalize(matrix[i], means[i], vars[i]);
         }
     }
 

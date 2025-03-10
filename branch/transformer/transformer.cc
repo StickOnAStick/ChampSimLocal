@@ -244,19 +244,17 @@ public:
     // --------------------------------------------------
 
     FixedVector<FixedVector<float>> hidden = USE_CUDA ? FixedVectorMath::linearCuda(input, w_ff1, b_ff1) : FixedVectorMath::linear(input, w_ff1, b_ff1);
-    ctx.ffnIntermediate = hidden;
     //---------------------------------------------------
     // 2.) Relu in place
     //---------------------------------------------------
     FixedVectorMath::relu(hidden);
-    ctx.ffnActivated = hidden;
+    ctx.ff_intermediate = hidden;
     //---------------------------------------------------
     // 3.) output = hidden * w_ff2 + b_ff2
     //     => output: shapre [sequence_len, d_model]
     //---------------------------------------------------
     FixedVector<FixedVector<float>> output = USE_CUDA ? FixedVectorMath::linearCuda(hidden, w_ff2, b_ff2) : FixedVectorMath::linear(hidden, w_ff2, b_ff2);
-    ctx.ffnOut = output;
-    return ctx.ffnOut;
+    return output;
   }
 
   float pooledOutput(ForwardContext& ctx, FixedVector<FixedVector<float>>& input) override {
@@ -307,16 +305,15 @@ public:
   }
 
   bool predict(ForwardContext& ctx, uint64_t ip){
-
     /*
       Positional Encoding
 
       Dealers choice, test with correct weights
     */
+    ctx.ip = ip;
     //this->hashed_pos_encoding(&ip); // We want to use this one but it relies on global history which is not yet figured out.
     this->fixed_posEncoding(ip);
-
-
+    ctx.input = this->sequence_history; // Input is after we added the new instruction.
     /*
       Masked Multi-Headed Attention
     */
@@ -325,20 +322,19 @@ public:
     ctx.attn_post_residual = MMA_out;
     FixedVectorMath::normalize(MMA_out, ctx.attn_mean_i, ctx.attn_var_i);
     ctx.ffnInput = MMA_out;
-
     /*
       Feed-Forward Layer
     */
     FixedVector<FixedVector<float>> FF_out = this->FFLayer(ctx, MMA_out);
     FixedVectorMath::add(FF_out, MMA_out);
+    ctx.ff_post_residual = FF_out;
     FixedVectorMath::normalize(FF_out, ctx.ff_mean_i, ctx.ff_var_i);
-    ctx.ffnOut = FF_out;
+    ctx.ff_normed = FF_out;
+
 
     float out = this->pooledOutput(ctx, FF_out);
 
-    this->spec_global_history.push(bool(out)); // Update the speculative history.
-
-    return bool(out);
+    return out > 0.5;
   }
 
   void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate = 0.001f){
@@ -351,7 +347,7 @@ public:
       const FixedVector<float>& var_vec,         // Variance of the i_th row
       const FixedVector<FixedVector<float>>& dL_dy, // Grad wrt LN Out
       FixedVector<FixedVector<float>>& dL_dx,       // to fill
-      float epsilon
+      float epsilon = 1e-5
     ){
       for(int i = 0; i < this->sequence_len; i++){
         float mean_i = mean_vec[i];
@@ -364,20 +360,19 @@ public:
 
         for(int k = 0; k < d_model; k++){
             sum_dL_dy         += dL_dy[i][k];
-            sum_dL_dy_times_y += dL_dy[i][k] * y[i][k]; 
+            sum_dL_dy_times_y += dL_dy[i][k] * (x[i][k] - mean_i); 
         }
 
         // Now compute dL/dx for each feature in row i
         for(int k = 0; k < d_model; k++){
             float grad_yk = dL_dy[i][k];   // dL/dy[i][k]
-            float yk      = y[i][k];       // LN output
             // LN backprop formula:
             // dL/dx = (1 / inv_std) * [ grad_yk
             //    - (1/d_model)*sum_dL_dy
             //    - yk*(1/d_model)*sum_dL_dy_times_y ]
             float term = grad_yk
                          - (sum_dL_dy / (float)d_model)
-                         - (yk * sum_dL_dy_times_y / (float)d_model);
+                         - ((x[i][k] - mean_i) * sum_dL_dy_times_y / (float)d_model);
             dL_dx[i][k] = inv_std * term;
           }
         }
@@ -486,7 +481,7 @@ public:
             // w_ff2 => shape [d_model, d_model]
             // ff_hidden[i][k] * w_ff2[k][j]
             for(int k = 0; k < d_model; k++){
-                w_ff2_grad[k][j] += grad_out_ij * ctx.ffnIntermediate[i][k];
+                w_ff2_grad[k][j] += grad_out_ij * ctx.ff_intermediate[i][k];
             }
         }
     }
@@ -501,8 +496,8 @@ public:
             }
             // Now apply ReLU gate. In forward pass, we did in-place ReLU on ff_hidden
             // If ff_hidden[i][k] <= 0 => gradient is 0
-            // We stored the post-activation in ctx.ffnIntermediate too, so let's check that:
-            if(ctx.ffnIntermediate[i][k] <= 0.0f) {
+            // We stored the post-activation in ctx.ff_intermediate too, so let's check that:
+            if(ctx.ff_intermediate[i][k] <= 0.0f) {
                 sum_grad = 0.0f;
             }
             dL_dff_hidden[i][k] = sum_grad;
@@ -622,7 +617,7 @@ public:
             for(int d = 0; d < d_head; d++){
                 float grad_out = dL_dHead_out[i][d];
                 for(int j = 0; j < sequence_len; j++){
-                    float attn_ij = ctx.softmax_attn[i][j];
+                    float attn_ij = ctx.softmax_attn[head][i][j];
                     // accumulate dL/dV_head
                     dL_dV_head[j][d] += grad_out * attn_ij;
                 }
@@ -650,11 +645,11 @@ public:
             // row sum
             float rowDot = 0.0f;
             for(int p = 0; p < sequence_len; p++){
-                rowDot += dL_dSoftmax[i][p] * ctx.softmax_attn[i][p];
+                rowDot += dL_dSoftmax[i][p] * ctx.softmax_attn[head][i][p];
             }
             for(int j = 0; j < sequence_len; j++){
                 float grad_softmax_ij = dL_dSoftmax[i][j];
-                float sm_ij           = ctx.softmax_attn[i][j];
+                float sm_ij           = ctx.softmax_attn[head][i][j];
                 // If masked, forward pass had sm_ij = 0 for that j => gradient ~ 0
                 dL_dScores[i][j] = sm_ij * (grad_softmax_ij - rowDot);
             }
@@ -805,8 +800,8 @@ std::map<O3_CPU*, Transformer> predictors; // One transformer for every core
 // This is used to compare against the actual prediction results.
 // Note: This is a map because we can do Multi-Core, each O3_CPU instance being a single core with it's own history.
 //-------------------------------------------
-/* DEPRECATED: Moved inside the transformer itself. Alleviating bitset's constantexpr requirement; however, still uncertain if this is the best approach. */
-//std::map<O3_CPU*, std::bitset<HISTORY_LENGTH>> global_history; 
+
+  std::map<O3_CPU*, std::deque<ForwardContext>> transformer_state_buf;
 
 } // namespace
 
@@ -815,12 +810,25 @@ std::map<O3_CPU*, Transformer> predictors; // One transformer for every core
 
 void O3_CPU::initialize_branch_predictor() {
   ::predictors.emplace(this, "spec.json");
+  ::transformer_state_buf.emplace(this, std::deque<ForwardContext>());
 }
 
 uint8_t O3_CPU::predict_branch(uint64_t ip) { 
 
+
+  int d_model = ::predictors.at(this).get_d_model();
+  int seq_len = ::predictors.at(this).get_seq_len();
+  int num_heads = ::predictors.at(this).get_head_count();
+
+
+  ForwardContext ctx = ForwardContext(seq_len, d_model, num_heads);
   // Get the transformers prediction. It will handle it's own sequence history. 
-  bool prediction = ::predictors.at(this).predict(ip);
+  bool prediction = ::predictors.at(this).predict(ctx, ip);
+
+  ::transformer_state_buf.at(this).push_back(ctx);
+  if (::transformer_state_buf.at(this).size() > 1000)
+    ::transformer_state_buf.at(this).pop_front();
+  
   //fmt::println("Transformer predicted: {} for ip {}\n", prediction, ip);
 
   return prediction;
@@ -836,10 +844,23 @@ void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t tak
   //    ::predictors.at(this).get_prediction(0),
   //    taken
   // );
-  // ::predictors.at(this).global_history.push(bool(taken)); // I hate this.
 
-  // if(prediction != taken){
-  //   // Do back prop
-  // }
+  auto state = std::find_if(
+    std::begin(::transformer_state_buf.at(this)), 
+    std::end(::transformer_state_buf.at(this)),
+    [ip](auto x) { return x.ip == ip; }
+  );
+  if(state == std::end(::transformer_state_buf.at(this)))
+    return; // State was lost, skip training.
+
+  ForwardContext ctx = *state;
+
+  if(ctx.out < 0.5 && taken) {
+    ::predictors.at(this).backwardsPass(ctx, 1);
+  }
+
+
+  ::transformer_state_buf.at(this).erase(state);
+
   return;
 }

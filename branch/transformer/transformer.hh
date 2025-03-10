@@ -16,7 +16,7 @@ using json = nlohmann::json;
 
 struct ForwardContext {
   // Memoization of forward pass for fast backward pass 
-
+  uint64_t ip;
   FixedVector<FixedVector<float>> input;
 
   // MMA Attention Intermediate results - Q, K, V = [seq_len, d_model]
@@ -32,9 +32,7 @@ struct ForwardContext {
 
   // Feed Forward
   FixedVector<FixedVector<float>> ffnInput; // Input after attn + residual [seq_len, d_model]
-  FixedVector<FixedVector<float>> ffnIntermediate; // First FFN linear Layer (pre-activation)
-  FixedVector<FixedVector<float>> ffnActivated; 
-  FixedVector<FixedVector<float>> ffnOut; // Output of the second ffn linear layer (pre-residual)
+  FixedVector<FixedVector<float>> ff_intermediate; 
   FixedVector<FixedVector<float>> ff_post_residual; // [seq_len, d_model]
   FixedVector<FixedVector<float>> ff_normed;        //
   FixedVector<float> ff_mean_i;                     // The mean of each row vector during normalization
@@ -46,16 +44,25 @@ struct ForwardContext {
 
   // Meaningful default constructor -- Be considerate when changing d_model, seq_len 
   ForwardContext(size_t seq_len = 24, size_t d_model = 70, size_t num_heads = 5) 
-      : Q(seq_len, FixedVector<float>(d_model, 0.0f)),
+      : 
+        ip(0),
+        input(seq_len, FixedVector<float>(d_model, 0.0f)),
+        Q(seq_len, FixedVector<float>(d_model, 0.0f)),
         K(seq_len, FixedVector<float>(d_model, 0.0f)),
         V(seq_len, FixedVector<float>(d_model, 0.0f)),
         attn_scores(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
         softmax_attn(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
         attn_out_head(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
         attn_out(seq_len, FixedVector<float>(d_model, 0.0f)),
+        attn_post_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
+        attn_mean_i(seq_len, 0.0f),
+        attn_var_i(seq_len, 0.0f),
         ffnInput(seq_len, FixedVector<float>(d_model, 0.0f)),
-        ffnIntermediate(seq_len, FixedVector<float>(d_model, 0.0f)),
-        ffnOut(seq_len,FixedVector<float>(d_model, 0.0f)),
+        ff_intermediate(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_post_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_normed(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_mean_i(seq_len, 0.0f),
+        ff_var_i(seq_len, 0.0f),
         pooled(d_model, 0.0f),
         logit(0.0f),
         out(0.0f){};
@@ -94,11 +101,40 @@ protected:
   FixedVector<float>              w_out;
   float                           b_out;
 
-  FixedVector<bool>               spec_global_history; // Used for back prop. (seq_len prev. predicitons)
   // std::deque<state_buf>           hist_state_buf;
+private:
+  // Function to modify the original filename and append "-OUT" before the extension
+  std::string getOutputFileName() const {
+    size_t dotPos = this->weights_file.find_last_of(".");
+    if (dotPos == std::string::npos) {
+      return this->weights_file + "-OUT.json"; // If no extension, append directly
+    }
+    return this->weights_file.substr(0, dotPos) + "-OUT" + this->weights_file.substr(dotPos);
+  }
+
+  // Convert FixedVector<FixedVector<float>> to JSON format
+  json convertMatrixToJson(const FixedVector<FixedVector<float>>& matrix) {
+    json result = json::array();
+    for (const auto& row : matrix) {
+      json rowJson = json::array();
+      for (const auto& val : row) {
+        rowJson.push_back(val);
+      }
+      result.push_back(rowJson);
+    }
+    return result;
+  }
+
+  // Convert FixedVector<float> to JSON format
+  json convertVectorToJson(const FixedVector<float>& vector) {
+    json result = json::array();
+    for (const auto& val : vector) {
+      result.push_back(val);
+    }
+    return result;
+  }
 
 public:
-  FixedVector<bool>               global_history;      // The actual branch result provided by ChampSim.
 
   // Construct the transformer from a given input configuration file
   TransformerBase(const std::string& config_file)
@@ -125,7 +161,6 @@ public:
 
     // Setup Sequence history matrix.
     sequence_history = FixedVector<FixedVector<float>>(sequence_len, FixedVector<float>(d_model, 0.0f));
-    spec_global_history = FixedVector<bool>(sequence_len, false); // Initalize with all not taken
 
     // Setup Weights
     w_q = loadWeights(weights_file, "queries", d_model, d_model);
@@ -140,10 +175,47 @@ public:
     b_out = loadWeights(weights_file, "b_out");
   }
 
-  virtual ~TransformerBase() = default;
+  virtual ~TransformerBase() {
+    saveWeights();
+  };
+
+  void saveWeights(){
+    std::string out_file_name = getOutputFileName();
+
+    std::ofstream outFile(out_file_name);
+    if(!outFile.is_open()){
+      throw std::runtime_error("Could not open file for writing weights: " + out_file_name);
+    }
+
+    json data;
+    
+    // Store updated weights into JSON
+    data["queries"] = convertMatrixToJson(w_q);
+    data["keys"] = convertMatrixToJson(w_k);
+    data["values"] = convertMatrixToJson(w_v);
+    data["output"] = convertMatrixToJson(w_o);
+    data["w_ff1"] = convertMatrixToJson(w_ff1);
+    data["w_ff2"] = convertMatrixToJson(w_ff2);
+    data["b_ff1"] = convertVectorToJson(b_ff1);
+    data["b_ff2"] = convertVectorToJson(b_ff2);
+    data["w_out"] = convertVectorToJson(w_out);
+    data["b_out"] = b_out; // Assuming it's a single float
+
+    // Write the updated JSON to the new file
+    outFile << data.dump(4); // Pretty-print with 4 spaces for readability
+    outFile.close();
+
+    std::cout << "Weights saved to " << out_file_name << std::endl;
+  }
 
   int get_seq_len(){
     return this->sequence_len;
+  }
+  int get_d_model(){
+    return this->d_model;
+  }
+  int get_head_count(){
+    return this->num_mma_heads;
   }
 
   json loadConfig(const std::string& config_file)
