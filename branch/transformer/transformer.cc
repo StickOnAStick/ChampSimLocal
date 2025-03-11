@@ -337,7 +337,7 @@ public:
     return out > 0.5;
   }
 
-  void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate = 0.001f){
+  void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate = 0.00001f){
     
     // Layer Norm. Backwards pass helper lambda function
     auto layerNormBackward = [&](  // *[&] is a lambda function which captures all variables out-of-scope by reference
@@ -349,35 +349,33 @@ public:
       FixedVector<FixedVector<float>>& dL_dx,       // to fill
       float epsilon = 1e-5
     ){
+      std::cout << "Layer Norm Back Prop beginning..." << std::endl;
       for(int i = 0; i < this->sequence_len; i++){
         float mean_i = mean_vec[i];
-        float var_i  = var_vec[i];
-        float inv_std = 1.0f / std::sqrt(var_i + epsilon);
+        float var_i = var_vec[i];
+        float inv_var = 1.0f / (var_i + epsilon);     // 1 / (variance + eps)
+        float inv_std = std::sqrt(inv_var);          // 1 / sqrt(var + eps)
 
-        // We'll need sums across the feature dimension.
-        float sum_dL_dy        = 0.0f;
-        float sum_dL_dy_times_y= 0.0f;
-
-        for(int k = 0; k < d_model; k++){
-            sum_dL_dy         += dL_dy[i][k];
-            sum_dL_dy_times_y += dL_dy[i][k] * (x[i][k] - mean_i); 
+        float sum_dL_dy = 0.0f;
+        float sum_dL_dy_times_xm = 0.0f; // sum( dL/dy_k * (x_k - mean) )
+        for (int k = 0; k < d_model; k++) {
+            sum_dL_dy += dL_dy[i][k];
+            sum_dL_dy_times_xm += dL_dy[i][k] * (x[i][k] - mean_i);
         }
-
-        // Now compute dL/dx for each feature in row i
-        for(int k = 0; k < d_model; k++){
-            float grad_yk = dL_dy[i][k];   // dL/dy[i][k]
-            // LN backprop formula:
-            // dL/dx = (1 / inv_std) * [ grad_yk
-            //    - (1/d_model)*sum_dL_dy
-            //    - yk*(1/d_model)*sum_dL_dy_times_y ]
-            float term = grad_yk
-                         - (sum_dL_dy / (float)d_model)
-                         - ((x[i][k] - mean_i) * sum_dL_dy_times_y / (float)d_model);
-            dL_dx[i][k] = inv_std * term;
-          }
+        for (int k = 0; k < d_model; k++) {
+            float grad_yk = dL_dy[i][k];
+            // LN derivative:
+            //   dL/dx =  inv_std * [ grad_yk
+            //                      - (1/d_model)*sum_dL_dy
+            //                      - (x[k]-mean)*inv_var * sum_dL_dy_times_xm / d_model ]
+            float val = grad_yk
+                      - (sum_dL_dy / (float)d_model)
+                      - ((x[i][k] - mean_i) * inv_var) * (sum_dL_dy_times_xm / (float)d_model);
+            dL_dx[i][k] = inv_std * val;
         }
+      }
+      std::cout << "Layer norm backprop complete!" << std::endl;
     };
-
     /****************************************************
      * 0) Derivative of BCE Loss wrt logit
      ****************************************************/
@@ -396,7 +394,6 @@ public:
     // dL/dpooled[k]  = dL/dlogit * W_logit[k]
     FixedVector<float> dL_dpooled(d_model, 0.0f);
     for(int k = 0; k < d_model; k++){
-        W_logit_grad[k] = dL_dlogit * this->w_out[k];
         // Actually we must correct the above line:
         //   The gradient wrt W_logit is (dL/dlogit * pooled[k])
         //   So:
@@ -462,10 +459,10 @@ public:
      *    We also have ff_hidden in ctx (pre-RELU).
      ****************************************************/
     // We'll keep local gradients for w_ff2, b_ff2, w_ff1, b_ff1
-    FixedVector<FixedVector<float>> w_ff2_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f));
-    FixedVector<float> b_ff2_grad = FixedVector<float>(d_model, 0.0f);
-    FixedVector<FixedVector<float>> w_ff1_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> w_ff1_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_ff, 0.0f));
     FixedVector<float> b_ff1_grad = FixedVector<float>(d_model, 0.0f);
+    FixedVector<FixedVector<float>> w_ff2_grad = FixedVector<FixedVector<float>>(d_ff, FixedVector<float>(d_model, 0.0f));
+    FixedVector<float> b_ff2_grad = FixedVector<float>(d_model, 0.0f);
 
     // We'll also need gradient wrt ff_hidden (post-relu):
     FixedVector<FixedVector<float>> dL_dff_hidden(sequence_len, FixedVector<float>(d_model, 0.0f));
@@ -480,27 +477,28 @@ public:
 
             // w_ff2 => shape [d_model, d_model]
             // ff_hidden[i][k] * w_ff2[k][j]
-            for(int k = 0; k < d_model; k++){
-                w_ff2_grad[k][j] += grad_out_ij * ctx.ff_intermediate[i][k];
+            for(int ff_dim = 0; ff_dim < d_ff; ff_dim++){
+                w_ff2_grad[ff_dim][j] += grad_out_ij * ctx.ff_intermediate[i][ff_dim];
             }
         }
     }
 
+    // Hidden Layer gradient
     // dL/dff_hidden = sum_j( dL/dff_out[i][j] * w_ff2[k][j] ) for each k
     // Then ReLU( ff_hidden ), so we must gate with ReLU derivative
     for(int i = 0; i < sequence_len; i++){
-        for(int k = 0; k < d_model; k++){
+        for(int ff_dim = 0; ff_dim < d_ff; ff_dim++){
             float sum_grad = 0.0f;
             for(int j = 0; j < d_model; j++){
-                sum_grad += dL_dFF_out_raw[i][j] * this->w_ff2[k][j];
+                sum_grad += dL_dFF_out_raw[i][j] * this->w_ff2[ff_dim][j];
             }
             // Now apply ReLU gate. In forward pass, we did in-place ReLU on ff_hidden
             // If ff_hidden[i][k] <= 0 => gradient is 0
             // We stored the post-activation in ctx.ff_intermediate too, so let's check that:
-            if(ctx.ff_intermediate[i][k] <= 0.0f) {
+            if(ctx.ff_intermediate[i][ff_dim] <= 0.0f) {
                 sum_grad = 0.0f;
             }
-            dL_dff_hidden[i][k] = sum_grad;
+            dL_dff_hidden[i][ff_dim] = sum_grad;
         }
     }
 
@@ -509,12 +507,13 @@ public:
     FixedVector<FixedVector<float>> dL_dFFN_input(sequence_len, FixedVector<float>(d_model, 0.0f));
 
     for(int i = 0; i < sequence_len; i++){
-        for(int j = 0; j < d_model; j++){
-            float grad_hidden_ij = dL_dff_hidden[i][j];
-            b_ff1_grad[j] += grad_hidden_ij;
+        for(int ff_dim = 0; ff_dim < d_ff; ff_dim++){
+            float grad_hidden_ij = dL_dff_hidden[i][ff_dim];
+            b_ff1_grad[ff_dim] += grad_hidden_ij;
+
             for(int k = 0; k < d_model; k++){
-                w_ff1_grad[k][j] += grad_hidden_ij * ctx.ffnInput[i][k];
-                dL_dFFN_input[i][k] += grad_hidden_ij * this->w_ff1[k][j];
+                w_ff1_grad[k][ff_dim] += grad_hidden_ij * ctx.ffnInput[i][k];
+                dL_dFFN_input[i][k] += grad_hidden_ij * this->w_ff1[k][ff_dim];
             }
         }
     }

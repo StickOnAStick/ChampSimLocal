@@ -17,8 +17,13 @@ public:
 
   T& operator[](std::size_t idx)
   {
-    if (idx >= vec.size())
-      throw std::out_of_range("Index out of bounds. Vec size: " + std::to_string(vec.size()));
+    if (idx >= vec.size()) {
+      throw std::out_of_range(
+        "Attempted index: " + std::to_string(idx) + "\n"
+        "Vector size: " + std::to_string(vec.size()) + "\n"
+        "Location: " + std::string(__FILE__) + ":" + std::to_string(__LINE__)
+      );      
+    }
     return vec[idx];
   }
 
