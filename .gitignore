@@ -10,7 +10,7 @@ bin/
 **/*.d
 
 # Ignore all transformer weights except the spec.json
-branch/transformer/**/*.json
+branch/transformer/*.json
 !branch/transformer/spec.json
 # Ignore all trace files
 **/*.xz
