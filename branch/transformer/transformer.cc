@@ -183,7 +183,6 @@ public:
           }
         }
       }
-      ctx.attn_scores[head] = attention_scores;
       // Softmax the attention scores (row-wise)
       FixedVectorMath::softmax(attention_scores);
       ctx.softmax_attn[head] = attention_scores;
@@ -198,7 +197,6 @@ public:
           }
         }
       }
-      ctx.attn_out_head[head] = head_out;
 
       /*
         Step 4: Concat all heads
@@ -292,7 +290,6 @@ public:
       logit += pooled[i] * w_out[i];
     }
     logit += b_out;
-    ctx.logit = logit;
 
     //--------------------------------------------------------
     // 3.) Sigmoid activation
@@ -310,8 +307,8 @@ public:
 
       Dealers choice, test with correct weights
     */
-    ctx.ip = ip;
     //this->hashed_pos_encoding(&ip); // We want to use this one but it relies on global history which is not yet figured out.
+    ctx.ip = ip;
     this->fixed_posEncoding(ip);
     ctx.input = this->sequence_history; // Input is after we added the new instruction.
     /*
@@ -349,7 +346,7 @@ public:
       FixedVector<FixedVector<float>>& dL_dx,       // to fill
       float epsilon = 1e-5
     ){
-      std::cout << "Layer Norm Back Prop beginning..." << std::endl;
+      // std::cout << "Layer Norm Back Prop beginning...\n" << std::endl;
       for(int i = 0; i < this->sequence_len; i++){
         float mean_i = mean_vec[i];
         float var_i = var_vec[i];
@@ -374,7 +371,7 @@ public:
             dL_dx[i][k] = inv_std * val;
         }
       }
-      std::cout << "Layer norm backprop complete!" << std::endl;
+      // std::cout << "Layer norm backprop complete!\n" << std::endl;
     };
     /****************************************************
      * 0) Derivative of BCE Loss wrt logit
@@ -386,6 +383,7 @@ public:
      ****************************************************/
     // Suppose we have class-member: W_logit (size d_model), b_logit (scalar)
     // We'll accumulate grads in local arrays:
+    // std::cout << "1. Begin Logit backprop\n" << std::endl;
     FixedVector<float> W_logit_grad = FixedVector<float>(d_model, 0.0f); 
     float b_logit_grad = 0.0f;
 
@@ -404,24 +402,28 @@ public:
     for(int k = 0; k < d_model; k++){
         dL_dpooled[k] = dL_dlogit * this->w_out[k];
     }
+    // std::cout << "1. End Logit backprop\n" << std::endl;
 
     /****************************************************
      * 2) Backprop from pooled -> ff_normed
      *    pooled[k] = average of ff_normed[i][k] over sequence_len
      ****************************************************/
     // So dL/dff_normed[i][k] += dL/dpooled[k] / sequence_len
+    // std::cout << "2. Begin Pooled backprop\n" << std::endl;
     FixedVector<FixedVector<float>> dL_dFF_normed(sequence_len, FixedVector<float>(d_model, 0.0f));
     for(int i = 0; i < sequence_len; i++){
         for(int k = 0; k < d_model; k++){
             dL_dFF_normed[i][k] = dL_dpooled[k] / (float)sequence_len;
         }
     }
-
+    // std::cout << "2. End Pooled backprop\n" << std::endl;
+    
     /****************************************************
      * 3) LayerNorm backward on the FF block
      *    FF block output is ctx.ff_normed => LN output
      *    LN input was ctx.ff_post_residual => (ff_out + attn_normed)
      ****************************************************/
+    // std::cout << "3. Begin FF Layer Norm backprop\n" << std::endl;
     FixedVector<FixedVector<float>> dL_dFF_post_resid(sequence_len, FixedVector<float>(d_model, 0.0f));
     // LN backward:
     layerNormBackward(
@@ -451,6 +453,7 @@ public:
             dL_dAttn_normed[i][k]   += g;  // to MHA LN output
         }
     }
+    // std::cout << "3. End FF Layer Norm backprop\n" << std::endl;
 
     /****************************************************
      * 4) Backprop the feed-forward sublayer
@@ -459,13 +462,15 @@ public:
      *    We also have ff_hidden in ctx (pre-RELU).
      ****************************************************/
     // We'll keep local gradients for w_ff2, b_ff2, w_ff1, b_ff1
+    // std::cout << "4. Begin FF backprop\n" << std::endl;
+
     FixedVector<FixedVector<float>> w_ff1_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_ff, 0.0f));
-    FixedVector<float> b_ff1_grad = FixedVector<float>(d_model, 0.0f);
+    FixedVector<float> b_ff1_grad = FixedVector<float>(d_ff, 0.0f);
     FixedVector<FixedVector<float>> w_ff2_grad = FixedVector<FixedVector<float>>(d_ff, FixedVector<float>(d_model, 0.0f));
     FixedVector<float> b_ff2_grad = FixedVector<float>(d_model, 0.0f);
 
     // We'll also need gradient wrt ff_hidden (post-relu):
-    FixedVector<FixedVector<float>> dL_dff_hidden(sequence_len, FixedVector<float>(d_model, 0.0f));
+    FixedVector<FixedVector<float>> dL_dff_hidden(sequence_len, FixedVector<float>(d_ff, 0.0f));
 
     // The final FF layer was: ff_out = ff_hidden * w_ff2 + b_ff2
     // dL/dff_out_raw = dL_dFF_out_raw
@@ -526,6 +531,7 @@ public:
             dL_dAttn_normed[i][k] += dL_dFFN_input[i][k];
         }
     }
+    // std::cout << "4. End FF backprop\n" << std::endl;
 
     /****************************************************
      * 5) Now handle LN backward for the MHA output
@@ -534,6 +540,8 @@ public:
      *    The "original_input_seq" for a single-layer decoder might be
      *    the embedding or the input to the block. We'll call it dL_dInput.
      ****************************************************/
+    // std::cout << "5. Begin Layer Norm MHA backprop\n" << std::endl;
+
     FixedVector<FixedVector<float>> dL_dAttn_post_resid(sequence_len, FixedVector<float>(d_model, 0.0f));
 
     layerNormBackward(
@@ -559,12 +567,15 @@ public:
             dL_dInputSeq[i][k] += g;  // gradient w.r.t. the original input to MHA sub-layer
         }
     }
+    // std::cout << "5. End Layer Norm MHA backprop\n" << std::endl;
+
 
     /****************************************************
      * 6) Backprop multi-head attention
      *    final MHA out: attention_out * w_o => attn_out
      *    So we do the matrix multiply backward first:
-     ****************************************************/
+    ****************************************************/
+    // std::cout << "6. Begin MHA backprop\n" << std::endl;
     FixedVector<FixedVector<float>> w_o_grad(d_model, FixedVector<float>(d_model, 0.0f));
 
     // dL_dAttentionOut is shape [sequence_len, d_model]
@@ -584,12 +595,15 @@ public:
             }
         }
     }
+    // std::cout << "6. End MHA backprop\n" << std::endl;
 
     /****************************************************
      * 7) Now handle each MHA head:
      *    We have Q,K,V in ctx.Q, ctx.K, ctx.V
      *    The final was attention_out = concat(head_0..head_n)
-     ****************************************************/
+    ****************************************************/
+    // std::cout << "7. Begin MHA heads backprop\n" << std::endl;
+    
     FixedVector<FixedVector<float>> dL_dQ(sequence_len, FixedVector<float>(d_model, 0.0f));
     FixedVector<FixedVector<float>> dL_dK(sequence_len, FixedVector<float>(d_model, 0.0f));
     FixedVector<FixedVector<float>> dL_dV(sequence_len, FixedVector<float>(d_model, 0.0f));
@@ -688,10 +702,13 @@ public:
             }
         }
     }
+    // std::cout << "7. End MHA heads backprop\n" << std::endl;
 
     /****************************************************
      * 8) Backprop Q,K,V => seq_history => w_q, w_k, w_v
      ****************************************************/
+    // std::cout << "8. Begin Q,K,V backprop\n" << std::endl;
+
     FixedVector<FixedVector<float>> w_q_grad(d_model, FixedVector<float>(d_model, 0.0f));
     FixedVector<FixedVector<float>> w_k_grad(d_model, FixedVector<float>(d_model, 0.0f));
     FixedVector<FixedVector<float>> w_v_grad(d_model, FixedVector<float>(d_model, 0.0f));
@@ -741,6 +758,7 @@ public:
             dL_dInputSeq[i][p] += dL_dSeqHistory[i][p];
         }
     }
+    // std::cout << "8. End Q,K,V backprop\n" << std::endl;
 
     /****************************************************
      * 9) Now we apply vanilla SGD updates to:
@@ -749,13 +767,14 @@ public:
      *    W_logit, b_logit,
      *    (and if LN had gamma,beta, we’d update them, but we don't here).
      ****************************************************/
-    // w_q
+    // std::cout << "9. Begin Weight / Bias update\n" << std::endl;
+
+    // w_q, w_k, w_v
     for(int p = 0; p < d_model; p++){
         for(int j = 0; j < d_model; j++){
             this->w_q[p][j] -= learning_rate * w_q_grad[p][j];
             this->w_k[p][j] -= learning_rate * w_k_grad[p][j];
             this->w_v[p][j] -= learning_rate * w_v_grad[p][j];
-            this->w_ff1[p][j] -= learning_rate * w_ff1_grad[p][j];
             this->w_ff2[p][j] -= learning_rate * w_ff2_grad[p][j];
         }
     }
@@ -765,9 +784,25 @@ public:
             this->w_o[p][j] -= learning_rate * w_o_grad[p][j];
         }
     }
-    // b_ff1, b_ff2
+    // w_ff1
+    for(int p = 0; p < d_model; ++p){
+      for (int ff_dim = 0; ff_dim < d_ff; ff_dim++){
+        w_ff1[p][ff_dim] -= learning_rate * w_ff1_grad[p][ff_dim];
+      }
+    }
+    // w_ff2
+    for(int ff_dim = 0; ff_dim < d_ff; ++ff_dim){
+      for(int j = 0; j < d_model; ++j){
+        w_ff2[ff_dim][j] -= learning_rate * w_ff2_grad[ff_dim][j];
+      }
+    }
+    // b_ff1
+    for(int i = 0; i < d_ff; i++){
+      this->b_ff1[i] -= learning_rate * b_ff1_grad[i];
+    }
+
+    // b_ff2
     for(int j = 0; j < d_model; j++){
-        this->b_ff1[j] -= learning_rate * b_ff1_grad[j];
         this->b_ff2[j] -= learning_rate * b_ff2_grad[j];
     }
     // W_logit, b_logit
@@ -775,7 +810,9 @@ public:
         this->w_out[k] -= learning_rate * W_logit_grad[k];
     }
     this->b_out -= learning_rate * b_logit_grad;
+    // std::cout << "9. End Weight / Bias update\n" << std::endl;
   }
+
 };
 
 
@@ -849,15 +886,17 @@ void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t tak
     std::end(::transformer_state_buf.at(this)),
     [ip](auto x) { return x.ip == ip; }
   );
-  if(state == std::end(::transformer_state_buf.at(this)))
+  if(state == std::end(::transformer_state_buf.at(this))){
+    // std::cout << "State lost, no backwards pass!\n" << std::endl; 
     return; // State was lost, skip training.
+  }
 
   ForwardContext ctx = *state;
 
   if(ctx.out < 0.5 && taken) {
-    ::predictors.at(this).backwardsPass(ctx, 1);
+    std::cout << "Running Backwards Pass\n";
+    ::predictors.at(this).backwardsPass(ctx, 1, ::predictors.at(this).lr);
   }
-
 
   ::transformer_state_buf.at(this).erase(state);
 

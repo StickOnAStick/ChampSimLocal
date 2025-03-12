@@ -16,15 +16,12 @@ using json = nlohmann::json;
 
 struct ForwardContext {
   // Memoization of forward pass for fast backward pass 
-  uint64_t ip;
+  uint64_t ip; // Instruction pointer called.
   FixedVector<FixedVector<float>> input;
 
   // MMA Attention Intermediate results - Q, K, V = [seq_len, d_model]
   FixedVector<FixedVector<float>> Q, K, V; // [seq_len, d_head]
-
-  FixedVector<FixedVector<FixedVector<float>>> attn_scores;       // before softmax [num_heads, [seq_len, seq_len]]
   FixedVector<FixedVector<FixedVector<float>>> softmax_attn;      // after Softmax  [num_heads, [seq_len, seq_len]]
-  FixedVector<FixedVector<FixedVector<float>>> attn_out_head;     // Before W_O     [num_heads, [seq_len, seq_len]]
   FixedVector<FixedVector<float>> attn_out;          // After W_O        [seq_len, d_model]
   FixedVector<FixedVector<float>> attn_post_residual;// [seq_len, d_model]
   FixedVector<float> attn_mean_i;                    // The mean of each row vector during normalization
@@ -39,32 +36,28 @@ struct ForwardContext {
   FixedVector<float> ff_var_i;                      // The variance of each row vector during normalization
 
   FixedVector<float> pooled; // Pooled Sequence represenation [d_model]
-  float logit; // Scalar logit (output pre-activation)
   float out; // Sigmoid Output
 
   // Meaningful default constructor -- Be considerate when changing d_model, seq_len 
-  ForwardContext(size_t seq_len = 24, size_t d_model = 70, size_t num_heads = 5) 
+  ForwardContext(size_t seq_len = 24, size_t d_model = 70, size_t num_heads = 5, size_t d_ff = 2*70) 
       : 
         ip(0),
         input(seq_len, FixedVector<float>(d_model, 0.0f)),
         Q(seq_len, FixedVector<float>(d_model, 0.0f)),
         K(seq_len, FixedVector<float>(d_model, 0.0f)),
         V(seq_len, FixedVector<float>(d_model, 0.0f)),
-        attn_scores(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
         softmax_attn(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
-        attn_out_head(num_heads, FixedVector<FixedVector<float>>(seq_len, FixedVector<float>(seq_len, 0.0f))),
         attn_out(seq_len, FixedVector<float>(d_model, 0.0f)),
         attn_post_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
         attn_mean_i(seq_len, 0.0f),
         attn_var_i(seq_len, 0.0f),
         ffnInput(seq_len, FixedVector<float>(d_model, 0.0f)),
-        ff_intermediate(seq_len, FixedVector<float>(d_model, 0.0f)),
+        ff_intermediate(seq_len, FixedVector<float>(d_ff, 0.0f)),
         ff_post_residual(seq_len, FixedVector<float>(d_model, 0.0f)),
         ff_normed(seq_len, FixedVector<float>(d_model, 0.0f)),
         ff_mean_i(seq_len, 0.0f),
         ff_var_i(seq_len, 0.0f),
         pooled(d_model, 0.0f),
-        logit(0.0f),
         out(0.0f){};
         
 };
@@ -136,6 +129,8 @@ private:
 
 public:
 
+  float lr; // learning rate                       
+
   // Construct the transformer from a given input configuration file
   TransformerBase(const std::string& config_file)
   {
@@ -158,6 +153,7 @@ public:
     if (d_model % num_mma_heads || d_model % num_ma_heads){
         throw std::runtime_error("Model size not compatible with number of heads!");
     }
+    lr = config["learning_rate"]; // learning rate
 
     // Setup Sequence history matrix.
     sequence_history = FixedVector<FixedVector<float>>(sequence_len, FixedVector<float>(d_model, 0.0f));

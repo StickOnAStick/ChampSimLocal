@@ -10,5 +10,6 @@
     "num_mma_heads": 5,
     "dropout_rate": 0.1,
     "sequence_len": 24,
-    "weights_file": "test.json"
+    "weights_file": "test.json",
+    "learning_rate": 0.000001
 }
