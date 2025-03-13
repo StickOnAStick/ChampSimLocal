@@ -2,7 +2,7 @@
     "executable_name": "champsim",
     "block_size": 64,
     "page_size": 4096,
-    "heartbeat_frequency": 10000000,
+    "heartbeat_frequency": 100,
     "num_cores": 1,
     "ooo_cpu": [
         {
@@ -26,7 +26,7 @@
             "dispatch_latency": 1,
             "schedule_latency": 0,
             "execute_latency": 0,
-            "branch_predictor": "transformer",
+            "branch_predictor": "lstm_predict",
             "btb": "basic_btb"
         }
     ],
