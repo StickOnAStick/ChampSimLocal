@@ -1,12 +1,12 @@
 ROOT_DIR = $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 
 CPPFLAGS += -MMD -I$(ROOT_DIR)/inc
-CXXFLAGS += --std=c++17 -Ofast -Wall -Wextra -Wno-shadow -Wpedantic -fopenmp 
+CXXFLAGS += --std=c++17 -Ofast -Wno-shadow -Wpedantic -fopenmp -Wno-variadic-macros
 
 # CUDA flags
 CUDA_FLAGS = -arch=all-major -O3  -ltoir -gen-opt-lto --use_fast_math --cudadevrt static --prec-div=false --extra-device-vectorization --default-stream per-thread
 # Compiler and linker
-CXX = g++
+CXX = g++ 
 NVCC = nvcc
 
 # vcpkg integration
