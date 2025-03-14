@@ -9,6 +9,7 @@
 #include <random>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
+#include <string.h>
 
 #include "FixedVectorMath.hh"
 
@@ -118,13 +119,14 @@ public:
       ---------------------------------------
       Dimensions:
       - sequence_history: [sequence_len, d_model]
-      - w_q, w_v, w_k: [d_model, d_q] [d_model, d_k] [d_model, d_v]
+      - w_q, w_v, w_k: [d_model, d_model] [d_model, d_model] [d_model, d_model]
       - Q, K, V:  [sequence_len, d_q] [sequence_len, d_v]
+      
     */
     
-    ctx.Q = USE_CUDA ? FixedVectorMath::dotProductCuda(sequence_history, w_q) : FixedVectorMath::dotProduct(sequence_history, w_q);
-    ctx.K = USE_CUDA ? FixedVectorMath::dotProductCuda(sequence_history, w_k) : FixedVectorMath::dotProduct(sequence_history, w_k);
-    ctx.V = USE_CUDA ? FixedVectorMath::dotProductCuda(sequence_history, w_v) : FixedVectorMath::dotProduct(sequence_history, w_v);
+    ctx.Q = USE_CUDA ? FixedVectorMath::dotCuda(sequence_history, w_q) : FixedVectorMath::dot(sequence_history, w_q);
+    ctx.K = USE_CUDA ? FixedVectorMath::dotCuda(sequence_history, w_k) : FixedVectorMath::dot(sequence_history, w_k);
+    ctx.V = USE_CUDA ? FixedVectorMath::dotCuda(sequence_history, w_v) : FixedVectorMath::dot(sequence_history, w_v);
     /*
       Step 2. Process Each Head
       - Slice Q, K, V for each head
@@ -175,7 +177,8 @@ public:
           }
 
           // QK^T / sqrt(d_head)
-          attention_scores[i][j] = score / std::sqrt(static_cast<float>(d_head));
+          float scale = 1.0f / std::sqrt(static_cast<float>(d_head)); // Enhance numerical stability.
+          attention_scores[i][j] = score * scale;
 
           // QK^T / sqrt(d_head) + M
           if (use_mask){
@@ -218,7 +221,7 @@ public:
 
       where W_O is of dim [d_model, d_model]
     */
-    ctx.attn_out = USE_CUDA ? FixedVectorMath::dotProductCuda(attention_out, w_o) : FixedVectorMath::dotProduct(attention_out, w_o);
+    ctx.attn_out = USE_CUDA ? FixedVectorMath::dotCuda(attention_out, w_o) : FixedVectorMath::dot(attention_out, w_o);
     return ctx.attn_out;
   }
 
@@ -314,19 +317,24 @@ public:
     /*
       Masked Multi-Headed Attention
     */
+    //std::cout << "Begin attn" << std::endl;
     FixedVector<FixedVector<float>> MMA_out = this->MALayer(ctx, true);
     FixedVectorMath::add(MMA_out, this->sequence_history); // Result stored in MMA_Out
     ctx.attn_post_residual = MMA_out;
-    FixedVectorMath::normalize(MMA_out, ctx.attn_mean_i, ctx.attn_var_i);
+    USE_CUDA ? FixedVectorMath::normalizeCuda(MMA_out, ctx.attn_mean_i, ctx.attn_var_i, this->epsilon) : FixedVectorMath::normalize(MMA_out, ctx.attn_mean_i, ctx.attn_var_i, this->epsilon);
     ctx.ffnInput = MMA_out;
+    //std::cout << "End attn" << std::endl;
+
     /*
       Feed-Forward Layer
     */
+    //std::cout << "Begin ff" << std::endl;
     FixedVector<FixedVector<float>> FF_out = this->FFLayer(ctx, MMA_out);
     FixedVectorMath::add(FF_out, MMA_out);
     ctx.ff_post_residual = FF_out;
-    FixedVectorMath::normalize(FF_out, ctx.ff_mean_i, ctx.ff_var_i);
+    USE_CUDA ? FixedVectorMath::normalizeCuda(FF_out, ctx.ff_mean_i, ctx.ff_var_i, this->epsilon) : FixedVectorMath::normalize(FF_out, ctx.ff_mean_i, ctx.ff_var_i, this->epsilon);
     ctx.ff_normed = FF_out;
+    //std::cout << "End ff" << std::endl;
 
 
     float out = this->pooledOutput(ctx, FF_out);
@@ -334,8 +342,11 @@ public:
     return out > 0.5;
   }
 
-  void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate = 0.00001f){
+  void backwardsPass(ForwardContext& ctx, float y_true, float learning_rate = 0.0001f){
     
+    if(std::isnan(learning_rate) || std::isinf(learning_rate))
+      throw std::runtime_error("Invalid learning rate");
+
     // Layer Norm. Backwards pass helper lambda function
     auto layerNormBackward = [&](  // *[&] is a lambda function which captures all variables out-of-scope by reference
       const FixedVector<FixedVector<float>>& x,  // LN Input
@@ -344,46 +355,44 @@ public:
       const FixedVector<float>& var_vec,         // Variance of the i_th row
       const FixedVector<FixedVector<float>>& dL_dy, // Grad wrt LN Out
       FixedVector<FixedVector<float>>& dL_dx,       // to fill
-      float epsilon = 1e-5
+      float e = 1e-5f
     ){
-      // std::cout << "Layer Norm Back Prop beginning...\n" << std::endl;
+      //std::cout<< "Layer Norm Back Prop beginning...\n" << std::endl;
       for(int i = 0; i < this->sequence_len; i++){
         float mean_i = mean_vec[i];
         float var_i = var_vec[i];
-        float inv_var = 1.0f / (var_i + epsilon);     // 1 / (variance + eps)
-        float inv_std = std::sqrt(inv_var);          // 1 / sqrt(var + eps)
+        float inv_std = 1.0f / std::sqrt(var_i + e);     
+        float inv_var = inv_std * inv_std;          
+        //fmt::print("inv_var {:.6f}, inv_std: {:.6f}\n", inv_var, inv_std);
+
 
         float sum_dL_dy = 0.0f;
         float sum_dL_dy_times_xm = 0.0f; // sum( dL/dy_k * (x_k - mean) )
         for (int k = 0; k < d_model; k++) {
+            float x_mean_diff = x[i][k] - mean_i;
             sum_dL_dy += dL_dy[i][k];
-            sum_dL_dy_times_xm += dL_dy[i][k] * (x[i][k] - mean_i);
+            sum_dL_dy_times_xm += dL_dy[i][k] * x_mean_diff;
+            //fmt::print("sum_dL_dy_times_xm {:.6f}, sum_dL_dy: {:.6f}\n", sum_dL_dy_times_xm, sum_dL_dy);
         }
         for (int k = 0; k < d_model; k++) {
-            float grad_yk = dL_dy[i][k];
-            // LN derivative:
-            //   dL/dx =  inv_std * [ grad_yk
-            //                      - (1/d_model)*sum_dL_dy
-            //                      - (x[k]-mean)*inv_var * sum_dL_dy_times_xm / d_model ]
-            float val = grad_yk
-                      - (sum_dL_dy / (float)d_model)
-                      - ((x[i][k] - mean_i) * inv_var) * (sum_dL_dy_times_xm / (float)d_model);
-            dL_dx[i][k] = inv_std * val;
+            float x_hat = (x[i][k] - mean_i) * inv_std;            
+            dL_dx[i][k] = inv_std * (dL_dy[i][k] - sum_dL_dy / d_model - x_hat * sum_dL_dy_times_xm / d_model);
         }
       }
-      // std::cout << "Layer norm backprop complete!\n" << std::endl;
+      //std::cout<< "Layer norm backprop complete!\n" << std::endl;
     };
     /****************************************************
      * 0) Derivative of BCE Loss wrt logit
      ****************************************************/
-    float dL_dlogit = (ctx.out - y_true);  // out = sigmoid(logit)
+    float out_clamped = std::max(std::min(ctx.out, 1.0f - 1e-6f), 1e-6f);
+    float dL_dlogit = (out_clamped - y_true);  // out = sigmoid(logit)
 
     /****************************************************
      * 1) Backprop from logit -> W_logit, b_logit, pooled
      ****************************************************/
     // Suppose we have class-member: W_logit (size d_model), b_logit (scalar)
     // We'll accumulate grads in local arrays:
-    // std::cout << "1. Begin Logit backprop\n" << std::endl;
+    //std::cout<< "1. Begin Logit backprop\n" << std::endl;
     FixedVector<float> W_logit_grad = FixedVector<float>(d_model, 0.0f); 
     float b_logit_grad = 0.0f;
 
@@ -402,28 +411,28 @@ public:
     for(int k = 0; k < d_model; k++){
         dL_dpooled[k] = dL_dlogit * this->w_out[k];
     }
-    // std::cout << "1. End Logit backprop\n" << std::endl;
+    //std::cout<< "1. End Logit backprop\n" << std::endl;
 
     /****************************************************
      * 2) Backprop from pooled -> ff_normed
      *    pooled[k] = average of ff_normed[i][k] over sequence_len
      ****************************************************/
     // So dL/dff_normed[i][k] += dL/dpooled[k] / sequence_len
-    // std::cout << "2. Begin Pooled backprop\n" << std::endl;
+    //std::cout<< "2. Begin Pooled backprop\n" << std::endl;
     FixedVector<FixedVector<float>> dL_dFF_normed(sequence_len, FixedVector<float>(d_model, 0.0f));
     for(int i = 0; i < sequence_len; i++){
         for(int k = 0; k < d_model; k++){
             dL_dFF_normed[i][k] = dL_dpooled[k] / (float)sequence_len;
         }
     }
-    // std::cout << "2. End Pooled backprop\n" << std::endl;
+    //std::cout<< "2. End Pooled backprop\n" << std::endl;
     
     /****************************************************
      * 3) LayerNorm backward on the FF block
      *    FF block output is ctx.ff_normed => LN output
      *    LN input was ctx.ff_post_residual => (ff_out + attn_normed)
      ****************************************************/
-    // std::cout << "3. Begin FF Layer Norm backprop\n" << std::endl;
+    //std::cout<< "3. Begin FF Layer Norm backprop\n" << std::endl;
     FixedVector<FixedVector<float>> dL_dFF_post_resid(sequence_len, FixedVector<float>(d_model, 0.0f));
     // LN backward:
     layerNormBackward(
@@ -433,7 +442,7 @@ public:
         ctx.ff_var_i,           // vars
         dL_dFF_normed,          // gradient from above
         dL_dFF_post_resid,      // result => dL/d LN input
-        1e-5f
+        this->epsilon
     );
 
     /****************************************************
@@ -453,7 +462,7 @@ public:
             dL_dAttn_normed[i][k]   += g;  // to MHA LN output
         }
     }
-    // std::cout << "3. End FF Layer Norm backprop\n" << std::endl;
+    //std::cout<< "3. End FF Layer Norm backprop\n" << std::endl;
 
     /****************************************************
      * 4) Backprop the feed-forward sublayer
@@ -462,7 +471,7 @@ public:
      *    We also have ff_hidden in ctx (pre-RELU).
      ****************************************************/
     // We'll keep local gradients for w_ff2, b_ff2, w_ff1, b_ff1
-    // std::cout << "4. Begin FF backprop\n" << std::endl;
+    //std::cout<< "4. Begin FF backprop\n" << std::endl;
 
     FixedVector<FixedVector<float>> w_ff1_grad = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_ff, 0.0f));
     FixedVector<float> b_ff1_grad = FixedVector<float>(d_ff, 0.0f);
@@ -531,7 +540,7 @@ public:
             dL_dAttn_normed[i][k] += dL_dFFN_input[i][k];
         }
     }
-    // std::cout << "4. End FF backprop\n" << std::endl;
+    //std::cout<< "4. End FF backprop\n" << std::endl;
 
     /****************************************************
      * 5) Now handle LN backward for the MHA output
@@ -540,7 +549,7 @@ public:
      *    The "original_input_seq" for a single-layer decoder might be
      *    the embedding or the input to the block. We'll call it dL_dInput.
      ****************************************************/
-    // std::cout << "5. Begin Layer Norm MHA backprop\n" << std::endl;
+    //std::cout<< "5. Begin Layer Norm MHA backprop\n" << std::endl;
 
     FixedVector<FixedVector<float>> dL_dAttn_post_resid(sequence_len, FixedVector<float>(d_model, 0.0f));
 
@@ -551,7 +560,7 @@ public:
         ctx.attn_var_i,
         dL_dAttn_normed,         // grad from feed-forward residual
         dL_dAttn_post_resid,     // result => gradient w.r.t. LN input
-        1e-5f
+        this->epsilon
     );
 
     // Now that splits into attn_out + input_sequence
@@ -567,7 +576,7 @@ public:
             dL_dInputSeq[i][k] += g;  // gradient w.r.t. the original input to MHA sub-layer
         }
     }
-    // std::cout << "5. End Layer Norm MHA backprop\n" << std::endl;
+    //std::cout<< "5. End Layer Norm MHA backprop\n" << std::endl;
 
 
     /****************************************************
@@ -575,7 +584,7 @@ public:
      *    final MHA out: attention_out * w_o => attn_out
      *    So we do the matrix multiply backward first:
     ****************************************************/
-    // std::cout << "6. Begin MHA backprop\n" << std::endl;
+    //std::cout<< "6. Begin MHA backprop\n" << std::endl;
     FixedVector<FixedVector<float>> w_o_grad(d_model, FixedVector<float>(d_model, 0.0f));
 
     // dL_dAttentionOut is shape [sequence_len, d_model]
@@ -595,14 +604,14 @@ public:
             }
         }
     }
-    // std::cout << "6. End MHA backprop\n" << std::endl;
+    //std::cout<< "6. End MHA backprop\n" << std::endl;
 
     /****************************************************
      * 7) Now handle each MHA head:
      *    We have Q,K,V in ctx.Q, ctx.K, ctx.V
      *    The final was attention_out = concat(head_0..head_n)
     ****************************************************/
-    // std::cout << "7. Begin MHA heads backprop\n" << std::endl;
+    //std::cout<< "7. Begin MHA heads backprop\n" << std::endl;
     
     FixedVector<FixedVector<float>> dL_dQ(sequence_len, FixedVector<float>(d_model, 0.0f));
     FixedVector<FixedVector<float>> dL_dK(sequence_len, FixedVector<float>(d_model, 0.0f));
@@ -702,12 +711,12 @@ public:
             }
         }
     }
-    // std::cout << "7. End MHA heads backprop\n" << std::endl;
+    //std::cout<< "7. End MHA heads backprop\n" << std::endl;
 
     /****************************************************
      * 8) Backprop Q,K,V => seq_history => w_q, w_k, w_v
      ****************************************************/
-    // std::cout << "8. Begin Q,K,V backprop\n" << std::endl;
+    //std::cout<< "8. Begin Q,K,V backprop\n" << std::endl;
 
     FixedVector<FixedVector<float>> w_q_grad(d_model, FixedVector<float>(d_model, 0.0f));
     FixedVector<FixedVector<float>> w_k_grad(d_model, FixedVector<float>(d_model, 0.0f));
@@ -758,7 +767,7 @@ public:
             dL_dInputSeq[i][p] += dL_dSeqHistory[i][p];
         }
     }
-    // std::cout << "8. End Q,K,V backprop\n" << std::endl;
+    //std::cout<< "8. End Q,K,V backprop\n" << std::endl;
 
     /****************************************************
      * 9) Now we apply vanilla SGD updates to:
@@ -767,52 +776,231 @@ public:
      *    W_logit, b_logit,
      *    (and if LN had gamma,beta, we’d update them, but we don't here).
      ****************************************************/
-    // std::cout << "9. Begin Weight / Bias update\n" << std::endl;
+    //std::cout<< "9. Begin Weight / Bias update\n" << std::endl;
 
-    // w_q, w_k, w_v
-    for(int p = 0; p < d_model; p++){
-        for(int j = 0; j < d_model; j++){
-            this->w_q[p][j] -= learning_rate * w_q_grad[p][j];
-            this->w_k[p][j] -= learning_rate * w_k_grad[p][j];
-            this->w_v[p][j] -= learning_rate * w_v_grad[p][j];
-            this->w_ff2[p][j] -= learning_rate * w_ff2_grad[p][j];
-        }
-    }
-    // w_o
-    for(int p = 0; p < d_model; p++){
-        for(int j = 0; j < d_model; j++){
-            this->w_o[p][j] -= learning_rate * w_o_grad[p][j];
-        }
-    }
-    // w_ff1
-    for(int p = 0; p < d_model; ++p){
-      for (int ff_dim = 0; ff_dim < d_ff; ff_dim++){
-        w_ff1[p][ff_dim] -= learning_rate * w_ff1_grad[p][ff_dim];
+    this->adam_step += 1;
+    float alpha_t = this->lr
+                    * std::sqrt(1.0f - std::pow(beta2, this->adam_step))
+                    / (1.0f - std::pow(beta1, this->adam_step));
+    
+    // ADAM update for w_q, w_k, w_v, w_o
+    for(int i = 0; i < d_model; i++){
+      for(int j = 0; j < d_model; j++){
+        // old moments
+        float q_m_old = w_q_m[i][j];
+        float q_v_old = w_q_v[i][j];
+        float k_m_old = w_k_m[i][j];
+        float k_v_old = w_k_v[i][j];        
+        float v_m_old = w_v_m[i][j];
+        float v_v_old = w_v_v[i][j];
+        float o_m_old = w_o_m[i][j];
+        float o_v_old = w_o_v[i][j];
+
+        float q_g = w_q_grad[i][j];
+        float k_g = w_k_grad[i][j];
+        float v_g = w_v_grad[i][j];
+        float o_g = w_o_grad[i][j];
+        
+        // new moments
+        float q_m_new = beta1 * q_m_old + (1.0f - beta1) * q_g;
+        float q_v_new = beta2 * q_v_old + (1.0f - beta2) * (q_g*q_g);
+        float k_m_new = beta1 * k_m_old + (1.0f - beta1) * k_g;
+        float k_v_new = beta2 * k_v_old + (1.0f - beta2) * (k_g*k_g);
+        float v_m_new = beta1 * v_m_old + (1.0f - beta1) * v_g;
+        float v_v_new = beta2 * v_v_old + (1.0f - beta2) * (v_g*v_g);
+        float o_m_new = beta1 * o_m_old + (1.0f - beta1) * o_g;
+        float o_v_new = beta2 * o_v_old + (1.0f - beta2) * (o_g * o_g);
+
+
+        w_q_m[i][j] = q_m_new;
+        w_q_v[i][j] = q_v_new;
+        w_k_m[i][j] = k_m_new;
+        w_k_v[i][j] = k_v_new;
+        w_v_m[i][j] = v_m_new;
+        w_v_v[i][j] = v_v_new;
+        w_o_m[i][j] = o_m_new;
+        w_o_v[i][j] = o_v_new;
+
+        w_q[i][j] -= alpha_t * (q_m_new / (std::sqrt(q_v_new) + this->epsilon));
+        w_k[i][j] -= alpha_t * (k_m_new / (std::sqrt(k_v_new) + this->epsilon));
+        w_v[i][j] -= alpha_t * (v_m_new / (std::sqrt(v_v_new) + this->epsilon));
+        w_o[i][j] -= alpha_t * (o_m_new / (std::sqrt(o_v_new) + this->epsilon));
+      }
+    }           
+    
+    // ADAM update for w_ff1
+    for(int i = 0; i < d_model; i++){
+      for(int j = 0; j < d_ff; j++){
+            float m_old = w_ff1_m[i][j];
+            float v_old = w_ff1_v[i][j];
+
+            float g = w_ff1_grad[i][j];
+
+            float m_new = beta1 * m_old + (1.0f - beta1) * g;
+            float v_new = beta2 * v_old + (1.0f - beta2) * (g*g);
+
+            w_ff1_m[i][j] = m_new;
+            w_ff1_v[i][j] = v_new;
+
+            w_ff1[i][j] -= alpha_t * (m_new / (std::sqrt(v_new) + epsilon));
       }
     }
-    // w_ff2
-    for(int ff_dim = 0; ff_dim < d_ff; ++ff_dim){
-      for(int j = 0; j < d_model; ++j){
-        w_ff2[ff_dim][j] -= learning_rate * w_ff2_grad[ff_dim][j];
-      }
-    }
-    // b_ff1
+
+    // Adam update for w_ff2
     for(int i = 0; i < d_ff; i++){
-      this->b_ff1[i] -= learning_rate * b_ff1_grad[i];
+      for(int j = 0; j < d_model; j++){
+        float m_old = w_ff2_m[i][j];
+            float v_old = w_ff2_v[i][j];
+
+            float g = w_ff2_grad[i][j];
+
+            float m_new = beta1 * m_old + (1.0f - beta1) * g;
+            float v_new = beta2 * v_old + (1.0f - beta2) * (g*g);
+
+            w_ff2_m[i][j] = m_new;
+            w_ff2_v[i][j] = v_new;
+
+            w_ff2[i][j] -= alpha_t * (m_new / (std::sqrt(v_new) + epsilon));
+      }
     }
 
-    // b_ff2
+    // Adam update for b_ff1
+    for(int i = 0; i < d_ff; i++){
+      float m_old = b_ff1_m[i];
+      float v_old = b_ff1_v[i];
+
+      float g = b_ff1_grad[i];
+
+      float m_new = beta1 * m_old + (1.0f - beta1) * g;
+      float v_new = beta2 * v_old + (1.0f - beta2) * (g*g);
+
+      b_ff1_m[i] = m_new;
+      b_ff1_v[i] = v_new;
+
+      b_ff1[i] -= alpha_t * (m_new / (std::sqrt(v_new) + epsilon));
+    }
+
+    // Adam update for b_ff2
     for(int j = 0; j < d_model; j++){
-        this->b_ff2[j] -= learning_rate * b_ff2_grad[j];
+      float m_old = b_ff2_m[j];
+      float v_old = b_ff2_v[j];
+
+      float g = b_ff2_grad[j];
+
+      float m_new = beta1 * m_old + (1.0f - beta1) * g;
+      float v_new = beta2 * v_old + (1.0f - beta2) * (g*g);
+
+      b_ff2_m[j] = m_new;
+      b_ff2_v[j] = v_new;
+
+      b_ff2[j] -= alpha_t * (m_new / (std::sqrt(v_new) + epsilon));
     }
-    // W_logit, b_logit
+
+    // Adam update for w_out (1D)
     for(int k = 0; k < d_model; k++){
-        this->w_out[k] -= learning_rate * W_logit_grad[k];
+      float m_old = w_out_m[k];
+      float v_old = w_out_v[k];
+
+      float g = W_logit_grad[k];
+
+      float m_new = beta1 * m_old + (1.0f - beta1) * g;
+      float v_new = beta2 * v_old + (1.0f - beta2) * (g*g);
+
+      w_out_m[k] = m_new;
+      w_out_v[k] = v_new;
+
+      w_out[k] -= alpha_t * (m_new / (std::sqrt(v_new) + epsilon));
     }
-    this->b_out -= learning_rate * b_logit_grad;
-    // std::cout << "9. End Weight / Bias update\n" << std::endl;
+
+    // Adam update for b_out
+    {
+      float m_old = b_out_m;
+      float v_old = b_out_v;
+
+      float g = b_logit_grad;
+
+      float m_new = beta1 * m_old + (1.0f - beta1) * g;
+      float v_new = beta2 * v_old + (1.0f - beta2) * (g*g);
+
+      b_out_m = m_new;
+      b_out_v = v_new;
+
+      b_out -= alpha_t * (m_new / (std::sqrt(v_new) + epsilon));
+    }
+    //std::cout<< "9. End Weight / Bias update\n" << std::endl;
+    
+    // Print Gradients for testing
+    // w_logit, b_logit
+    // print_gradients(
+    //   w_q_grad,
+    //   w_k_grad,
+    //   w_v_grad,
+    //   w_o_grad,
+    //   w_ff1_grad,
+    //   w_ff2_grad,
+    //   b_ff1_grad,
+    //   b_ff2_grad,
+    //   W_logit_grad,
+    //   b_logit_grad
+    // );
+
   }
 
+  void print_gradients(
+    const FixedVector<FixedVector<float>>& w_q_grad,
+    const FixedVector<FixedVector<float>>& w_k_grad,
+    const FixedVector<FixedVector<float>>& w_v_grad,
+    const FixedVector<FixedVector<float>>& w_o_grad,
+    const FixedVector<FixedVector<float>>& w_ff1_grad,
+    const FixedVector<FixedVector<float>>& w_ff2_grad,
+    const FixedVector<float>& b_ff1_grad,
+    const FixedVector<float>& b_ff2_grad,
+    const FixedVector<float>& W_logit_grad,
+    float b_logit_grad
+  ){
+    auto print_matrix = [](const FixedVector<FixedVector<float>>& mat, const std::string& name){
+      if (mat.empty()) {
+        fmt::print("{}: [Empty]\n\n", name);
+        return;
+      }
+
+      fmt::print("{}\n", name);
+      for(const auto& row: mat){
+        for(float val : row){
+          fmt::print("{} ", std::isnan(val) ? "NaN" : fmt::format("{:.4f}", val));
+        }
+        fmt::print("\n");
+      }
+      fmt::print("\n");
+    };
+
+    auto print_vector = [](const FixedVector<float>& vec, const std::string& name){
+      
+      if(vec.empty()) {
+        fmt::print("{}: [Empty]\n\n", name);
+        return;
+      }
+
+      fmt::print("{}\n", name);
+      for(float val : vec){
+        fmt::print("{} ", std::isnan(val) ? "NaN" : fmt::format("{:.4f}", val));
+      }
+      fmt::print("\n\n");
+    };
+
+    fmt::print("==== Gradients ====\n");
+    print_matrix(w_q_grad, "w_q_grad");
+    print_matrix(w_k_grad, "w_k_grad");
+    print_matrix(w_v_grad, "w_v_grad");
+    print_matrix(w_o_grad, "w_o_grad");
+    print_matrix(w_ff1_grad, "w_ff1_grad");
+    print_matrix(w_ff2_grad, "w_ff2_grad");
+    print_vector(b_ff1_grad, "b_ff1_grad");
+    print_vector(b_ff2_grad, "b_ff2_grad");
+    print_vector(W_logit_grad, "W_logit_grad");
+
+    fmt::print("b_logit_grad: {:8.4f}\n", b_logit_grad);
+  }
 };
 
 
@@ -887,15 +1075,15 @@ void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t tak
     [ip](auto x) { return x.ip == ip; }
   );
   if(state == std::end(::transformer_state_buf.at(this))){
-    // std::cout << "State lost, no backwards pass!\n" << std::endl; 
+    //std::cout<< "State lost, no backwards pass!\n" << std::endl; 
     return; // State was lost, skip training.
   }
 
   ForwardContext ctx = *state;
-
-  if(ctx.out < 0.5 && taken) {
-    std::cout << "Running Backwards Pass\n";
-    ::predictors.at(this).backwardsPass(ctx, 1, ::predictors.at(this).lr);
+  //fmt::print("TAKEN: {}\n", taken);
+  if((ctx.out < 0.5 && taken) || (ctx.out >= 0.5 && !taken)) {
+    //fmt::print("Running Backwards Pass\n");
+    ::predictors.at(this).backwardsPass(ctx, taken ? 1.0 : 0.0, ::predictors.at(this).lr);
   }
 
   ::transformer_state_buf.at(this).erase(state);

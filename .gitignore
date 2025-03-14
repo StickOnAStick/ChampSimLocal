@@ -9,6 +9,10 @@ bin/
 **/*.o
 **/*.d
 
+*.json
+!vcpkg.json
+!champsim_config.json
+
 # Ignore all transformer weights except the spec.json
 branch/transformer/*.json
 !branch/transformer/spec.json

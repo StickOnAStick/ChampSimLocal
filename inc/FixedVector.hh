@@ -34,6 +34,10 @@ public:
     return vec[idx];
   }
 
+  const T* data() const {
+    return vec.data();
+  }
+
   void push(FixedVector<T> new_val)
   {
     /*
@@ -44,6 +48,10 @@ public:
       throw std::runtime_error("Cannot push on an empty FixedVector");
     vec.erase(vec.begin());
     vec.push_back(new_val);
+  }
+
+  bool empty() const {
+    return vec.empty();
   }
 
   void push(T input){

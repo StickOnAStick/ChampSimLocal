@@ -16,7 +16,7 @@ void checkCudaError(const char* message) {
     }
 }
 #define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
-
+#define TILE_SIZE 16
 
 
 /*
@@ -47,24 +47,6 @@ void checkCudaError(const char* message) {
     Kernel function defintions
 -----------------------------------------
 */
-__global__ void mulKernel(const float* A, const float* B, float* out, size_t N){
-    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < N){
-        out[idx] = A[idx] * B[idx];
-    }
-}
-
-__global__ void mul2DKernel(const float* A, const float* B, float* out, size_t width, size_t height){
-    //1. Determine row and column for the current thread
-    size_t row = blockIdx.y * blockDim.y + threadIdx.y;
-    size_t col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    // 2. Check Boundary 
-    if (row < height && col < width){
-        size_t idx = row * width + col;
-        out[idx] = A[idx] * B[idx];
-    }
-}
 
 __global__ void addKernel(float* A, const float* B, size_t N){
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -97,31 +79,86 @@ __global__ void linear_kernel(int M, int N, int K, const float *A, const float *
     }
     C[x * N + y] += bias[y];
 }
+// ---------------------------------
+// 2) Example LN row kernel
+// ---------------------------------
+__global__ void layerNormRowKernel(
+    const float* __restrict__ dIn,
+    float* __restrict__ dOut,
+    float* __restrict__ dMean,
+    float* __restrict__ dVar,
+    int rows,
+    int cols,
+    float epsilon
+){
+    int row = blockIdx.x; 
+    if (row >= rows) return;
 
-__global__ void sgemm_naive(int M, int N, int K, const float *A,
-                            const float *B, float *C) {
-  const uint x = blockIdx.x * blockDim.x + threadIdx.x;
-  const uint y = blockIdx.y * blockDim.y + threadIdx.y;
-  // keep within tile bounds 
-  if (x < M && y < N) {
-    float tmp = 0.0;
-    for (int i = 0; i < K; ++i) 
-      tmp += A[x * K + i] * B[i * N + y];
-    C[x * N + y] =  tmp + C[x * N + y];
-  }
+    // We'll do naive parallel sums with atomicAdd. 
+    __shared__ float sMean;
+    __shared__ float sVar;
+
+    if (threadIdx.x == 0) {
+        sMean = 0.0f;
+        sVar  = 0.0f;
+    }
+    __syncthreads();
+
+    int startIdx = row*cols;
+    float localSum = 0.0f;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+        localSum += dIn[startIdx + c];
+    }
+    atomicAdd(&sMean, localSum);
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        sMean /= (float)cols;
+        dMean[row] = sMean;
+    }
+    __syncthreads();
+
+    float localVar = 0.0f;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+        float diff = dIn[startIdx + c] - sMean;
+        localVar += diff*diff;
+    }
+    atomicAdd(&sVar, localVar);
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        sVar /= (float)cols;
+        dVar[row] = sVar;
+    }
+    __syncthreads();
+
+    float invStd = rsqrtf(sVar + epsilon);
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+        float val = dIn[startIdx + c];
+        dOut[startIdx + c] = (val - sMean)*invStd;
+    }
 }
 
-__global__ void elementWiseMultiplyKernel(float* dA, float* dB, float* dOut, int m, int n)
-{
-    // Calculate global thread index
+__global__ void dotKernel(
+    const float* A, 
+    const float* B, 
+    float* C,
+    int rowsA, 
+    int colsA, 
+    int colsB
+) {
+    // Compute row and column for this thread
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    // Perform the element-wise multiplication if within bounds
-    if (row < m && col < n)
-    {
-        int index = row * n + col;
-        dOut[index] = dA[index] * dB[index];
+    // If within valid range
+    if (row < rowsA && col < colsB) {
+        float sum = 0;
+        // Multiply row of A by column of B
+        for (int k = 0; k < colsA; ++k) {
+            sum += A[row * colsA + k] * B[k * colsB + col];
+        }
+        C[row * colsB + col] = sum;
     }
 }
 
@@ -131,209 +168,141 @@ __global__ void elementWiseMultiplyKernel(float* dA, float* dB, float* dOut, int
 -----------------------------------------
 */   
 namespace FixedVectorMath {
-    FixedVector<FixedVector<float>> dotProductCuda(
-        FixedVector<FixedVector<float>>& A, 
-        FixedVector<FixedVector<float>>& B
-        ) {
-        
-        static cudaStream_t stream1;
-        // std::cout << stream1;
-        if (stream1 == 0)
-            cudaStreamCreate (&stream1);
-        int m = A.size();  // Number of rows in A
-        int n = A[0].size();  // Number of columns in A (also number of rows in B)
-        int k = B[0].size();  // Number of columns in B
 
-        // Flatten the 2D vectors into contiguous 1D arrays
-        float* hA = new float[m * n];
-        float* hB = new float[n * k];
-        float* hOut = new float[m * k];
-
-        for (size_t i = 0; i < m; ++i) {
-            memcpy(hA + i * n, A[i].data(), n * sizeof(float));
+    void normalizeCuda(
+        FixedVector<FixedVector<float>>& matrix,
+        FixedVector<float>& means,
+        FixedVector<float>& vars,
+        float epsilon
+    ) {
+        int m = matrix.size();
+        int n = matrix[0].size();
+    
+        if ((int)means.size() != m) {
+            means = FixedVector<float>(m, 0.0f);
         }
-        for (size_t i = 0; i < n; ++i) {
-            memcpy(hB + i * k, B[i].data(), k * sizeof(float));
+        if ((int)vars.size() != m) {
+            vars = FixedVector<float>(m, 0.0f);
         }
-
-        // Device memory allocations (only if dimensions have changed)
-        static float* dA = nullptr;
-        static float* dB = nullptr;
-        static float* dOut = nullptr;
-
-        static int prevM = -1, prevN = -1, prevK = -1;
-
-        // Check if the previous dimensions were the same, if not we need to 
-        // free the pointers on the device
-        if (prevM != m || prevK != k || prevN != n) {
-            printf("resize");
-            cudaFreeAsync(dA,0);
-            cudaFreeAsync(dB,0);
-            cudaFreeAsync(dOut,0);
-
-            // Allocate device memory
-            cudaMallocAsync((void**)&dA, m * n * sizeof(float),0);
-            checkCudaError("cudaMalloc for dA");
-            cudaMallocAsync((void**)&dB, n * k * sizeof(float),0);
-            checkCudaError("cudaMalloc for dB");
-            cudaMallocAsync((void**)&dOut, m * k * sizeof(float),0);
-            checkCudaError("cudaMalloc for dOut");
-
-            prevM = m;
-            prevK = k;
-            prevN = n;
+    
+        // flatten to host
+        float* hIn = new float[m*n];
+        for (int i = 0; i < m; i++) {
+            memcpy(hIn + i*n, matrix[i].data(), n*sizeof(float));
         }
-
-        // Copy A and B to device memory asynchronously
-        //auto start = std::chrono::high_resolution_clock::now();
-        cudaMemcpyAsync(dA, hA, m * n * sizeof(float), cudaMemcpyHostToDevice,0);
-        checkCudaError("cudaMemcpyAsync for dA");
-        //auto finish = std::chrono::high_resolution_clock::now();
-        //std::cout << std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count() << " ns for memcpy1 \n";
-        //start = std::chrono::high_resolution_clock::now();
-        cudaMemcpyAsync(dB, hB, k * n * sizeof(float), cudaMemcpyHostToDevice,0);
-        checkCudaError("cudaMemcpyAsync for dB");
-        // finish = std::chrono::high_resolution_clock::now();
-        //std::cout << std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count() << " ns for memcpy2 \n";
-        cudaMemsetAsync(dOut, 0, m * k * sizeof(float),0);
-        checkCudaError("cudaMemsetAsync for dOut");
-
-        // Launch the kernel
-        dim3 blockDim(16, 16);
-        dim3 gridDim((m + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);  // Grid size based on matrix dimensions
-        sgemm_naive<<<gridDim, blockDim>>>(m, n, k, dA, dB, dOut);
-        checkCudaError("Kernel launch failed");
-        
-        
-     
-        // Copy result back to host asynchronously
-       
-
-        //start = std::chrono::high_resolution_clock::now();
-
-        cudaMemcpyAsync(hOut, dOut, m * k * sizeof(float), cudaMemcpyDeviceToHost,stream1);
-        checkCudaError("cudaMemcpyAsync for hOut");
-        //finish = std::chrono::high_resolution_clock::now();
-        //std::cout << std::chrono::duration_cast<std::chrono::nanoseconds>(finish-start).count() << " ns for memcpy3 \n";
-
-        // Convert output back to FixedVector
-        
-        FixedVector<FixedVector<float>> out(m, FixedVector<float>(k, 0.0f));
-        for (size_t i = 0; i < m; ++i) {
-            memcpy(out[i].data(), hOut + i * k, k * sizeof(float));  // Copy row i of the result
+    
+        // allocate GPU
+        float* dIn=nullptr; 
+        float* dOut=nullptr; 
+        float* dMean=nullptr; 
+        float* dVar=nullptr;
+        cudaMalloc(&dIn,  m*n*sizeof(float));
+        cudaMalloc(&dOut, m*n*sizeof(float));
+        cudaMalloc(&dMean,m*sizeof(float));
+        cudaMalloc(&dVar, m*sizeof(float));
+    
+        // copy input
+        cudaMemcpy(dIn, hIn, m*n*sizeof(float), cudaMemcpyHostToDevice);
+    
+        // launch kernel: 1 block per row, up to 256 threads. 
+        dim3 grid(m);
+        dim3 block(256);
+        layerNormRowKernel<<<grid, block>>>(dIn, dOut, dMean, dVar, m, n, epsilon);
+        checkCudaError("layerNormRowKernel");
+    
+        // copy back
+        cudaMemcpy(hIn,   dOut,  m*n*sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(means.data(), dMean, m*sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(vars.data(),  dVar,  m*sizeof(float), cudaMemcpyDeviceToHost);
+    
+        // store result
+        for (int i = 0; i < m; i++) {
+            memcpy(matrix[i].data(), hIn + i*n, n*sizeof(float));
         }
-
-        
-        // Cleanup (free memory)
-        delete[] hA;
-        delete[] hB;
-        delete[] hOut;
-
-        return out;
+    
+        // free
+        cudaFree(dIn);
+        cudaFree(dOut);
+        cudaFree(dMean);
+        cudaFree(dVar);
+        delete[] hIn;
     }
 
-    void mulCuda(
-        FixedVector<float>& out, 
-        FixedVector<float>& A, 
-        FixedVector<float>& B
-        )
-    {
-        assert(A.size() == B.size());
-        size_t N = A.size();
+    FixedVector<FixedVector<float>> dotCuda(
+        const FixedVector<FixedVector<float>>& A,
+        const FixedVector<FixedVector<float>>& B
+    ){
+    // Ensure A's columns == B's rows
+    int rowsA = A.size();
+    int colsA = A[0].size();
+    int rowsB = B.size();
+    int colsB = B[0].size();
 
-        // 1.) Host pointers (CPU)
-        const float*  hA   = A.data();
-        const float*  hB   = B.data();
-        float*  hOut = out.data();
-        
-        // 2.) Device Pointers (GPU)
-        float* dA   = nullptr;  
-        float* dB   = nullptr;
-        float* dOut = nullptr;
-
-        cudaMallocAsync(&dA, N * sizeof(float),0);
-        cudaMallocAsync(&dB, N * sizeof(float),0);
-        cudaMallocAsync(&dOut, N * sizeof(float),0);
-
-        // 3.) Copy input from host to device
-        cudaMemcpy(dA, hA, N * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(dB, hB, N * sizeof(float), cudaMemcpyHostToDevice);
-
-        // 4.) Launch Kernel
-        int blockSize = 256; // This is mostly arbitrary! But we use 16 for a base 2 number less than 1024 that can still perform many operations.
-        int gridSize = (N + blockSize - 1) / blockSize; 
-        mulKernel<<<gridSize, blockSize>>>(dA, dB, dOut, N);
-        // 5.) Copy the output from device to host
-        // BEWARE: using vec.data() as a the T* works for all values EXCEPT BOOLS, as vectors of bools are NOT CONTIGUOUS.
-        cudaMemcpy(hOut,dOut, N * sizeof(float), cudaMemcpyDeviceToHost);
-
-        // 6.) Clean up
+    if (colsA != rowsB) {
+        throw std::invalid_argument("Matrix dimension mismatch: A[rows x cols], B[cols x ???]");
     }
 
-    void mulCuda(
-        FixedVector<FixedVector<float>>& out, 
-        FixedVector<FixedVector<float>>& A, 
-        FixedVector<FixedVector<float>>& B
-        )
-    {
-        int m = A.size();  // Number of rows
-        int n = A[0].size();  // Number of columns
-
-        // Allocate device memory for matrices A, B, and out
-        float* dA = nullptr;
-        float* dB = nullptr;
-        float* dOut = nullptr;
-
-        // Allocate contiguous memory for all matrices (A, B, and out)
-        cudaMallocAsync((void**)&dA, m * n * sizeof(float), 0);
-        checkCudaError("cudaMalloc for dA");
-
-        cudaMallocAsync((void**)&dB, m * n * sizeof(float), 0);
-        checkCudaError("cudaMalloc for dB");
-
-        cudaMallocAsync((void**)&dOut, m * n * sizeof(float), 0);
-        checkCudaError("cudaMalloc for dOut");
-
-        // Flatten the matrices and copy to device (single memory copy)
-        float* hA = new float[m * n];
-        float* hB = new float[m * n];
-
-
-        // Flatten the 2D matrix A to 1D array
-        for (int i = 0; i < m; ++i) {
-            std::memcpy(hA + i * n, A[i].data(), n * sizeof(float));
-            std::memcpy(hB + i * n, B[i].data(), n * sizeof(float));
+    // Flatten A and B for memory transfer to device
+    std::vector<float> h_A(rowsA * colsA);
+    std::vector<float> h_B(rowsB * colsB);
+    for (int i = 0; i < rowsA; ++i) {
+        for (int j = 0; j < colsA; ++j) {
+            h_A[i * colsA + j] = A[i][j];
         }
-        
-        // Copy the flattened matrices to device
-        cudaMemcpyAsync(dA, hA, m * n * sizeof(float), cudaMemcpyHostToDevice);
-        checkCudaError("cudaMemcpy for dA");
-
-        cudaMemcpyAsync(dB, hB, m * n * sizeof(float), cudaMemcpyHostToDevice);
-        checkCudaError("cudaMemcpy for dB");
-
-        // Set up kernel launch parameters (using 16x16 block size)
-        dim3 blockDim(16, 16);  // Block size: 16x16 threads
-        dim3 gridDim((n + blockDim.x - 1) / blockDim.x, (m + blockDim.y - 1) / blockDim.y);  // Grid size
-
-        // Launch the kernel for element-wise multiplication
-        elementWiseMultiplyKernel<<<gridDim, blockDim>>>(dA, dB, dOut, m, n);
-        checkCudaError("Kernel launch failed");
-
-        // Copy the result back to the host in one go (flattened)
-        float* hOut = new float[m * n];
-        cudaMemcpyAsync(hOut, dOut, m * n * sizeof(float), cudaMemcpyDeviceToHost);
-        checkCudaError("cudaMemcpy for hOut");
-
-        // Copy the flattened result back into the 2D out structure
-        for (int i = 0; i < m; ++i) {
-            std::memcpy(out[i].data(), hOut + i * n, n * sizeof(float));
+    }
+    for (int i = 0; i < rowsB; ++i) {
+        for (int j = 0; j < colsB; ++j) {
+            h_B[i * colsB + j] = B[i][j];
         }
+    }
 
-        // Free host memory
-        delete[] hA;
-        delete[] hB;
-        delete[] hOut;
+    // Allocate memory on the device
+    float* d_A = nullptr;
+    float* d_B = nullptr;
+    float* d_C = nullptr;
+    size_t sizeA = rowsA * colsA * sizeof(float);
+    size_t sizeB = rowsB * colsB * sizeof(float);
+    size_t sizeC = rowsA * colsB * sizeof(float);
+
+    cudaMalloc((void**)&d_A, sizeA);
+    cudaMalloc((void**)&d_B, sizeB);
+    cudaMalloc((void**)&d_C, sizeC);
+
+    // Copy data from host to device
+    cudaMemcpy(d_A, h_A.data(), sizeA, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B.data(), sizeB, cudaMemcpyHostToDevice);
+
+    // Choose reasonable block and grid sizes
+    // For simplicity, we set the block to 16x16 threads
+    dim3 block(16, 16);
+    // We then compute how many blocks we need in each dimension
+    dim3 grid((colsB + block.x - 1) / block.x,
+              (rowsA + block.y - 1) / block.y);
+
+    // Launch the kernel
+    dotKernel<<<grid, block>>>(d_A, d_B, d_C, rowsA, colsA, colsB);
+
+    // Wait for GPU to finish
+    cudaDeviceSynchronize();
+
+    // Copy result back to host
+    std::vector<float> h_C(rowsA * colsB);
+    cudaMemcpy(h_C.data(), d_C, sizeC, cudaMemcpyDeviceToHost);
+
+    // Free device memory
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C);
+
+    // Reshape flattened C back into 2D vector
+    FixedVector<FixedVector<float>> result(rowsA, FixedVector<float>(colsB, static_cast<float>(0)));
+    for (int i = 0; i < rowsA; ++i) {
+        for (int j = 0; j < colsB; ++j) {
+            result[i][j] = h_C[i * colsB + j];
+        }
+    }
+
+    return result;
     }
 
     FixedVector<FixedVector<float>> linearCuda(
@@ -382,13 +351,13 @@ namespace FixedVectorMath {
             if (dOut != nullptr) cudaFree(dOut);
             if (dBias != nullptr) cudaFree(dBias);
             // Allocate memory for the new matrices on the device
-            cudaMallocAsync((void**)&dA, m * k * sizeof(float),0);
+            cudaMallocAsync((void**)&dA, m * k * sizeof(float), stream2);
             checkCudaError("CudaMalloc for dA");
-            cudaMallocAsync((void**)&dB, k * n * sizeof(float),0);
+            cudaMallocAsync((void**)&dB, k * n * sizeof(float), stream2);
             checkCudaError("CudaMalloc for dB");
-            cudaMallocAsync((void**)&dOut, m * n * sizeof(float),0);
+            cudaMallocAsync((void**)&dOut, m * n * sizeof(float), stream2);
             checkCudaError("CudaMalloc for dOut");
-            cudaMallocAsync((void**)&dBias, n * sizeof(float),0);
+            cudaMallocAsync((void**)&dBias, n * sizeof(float), stream2);
             checkCudaError("CudaMalloc for dBias");
 
             // Update the previous dimensions
@@ -412,10 +381,12 @@ namespace FixedVectorMath {
         dim3 blockDim(8, 8);  // Smaller block size to reduce resource usage
         dim3 gridDim((m + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);  // Grid size based on matrix dimensions
 
-        linear_kernel<<<gridDim, blockDim>>>(m, n, k, dA, dB, dBias, dOut);
+        linear_kernel<<<gridDim, blockDim, m*n*sizeof(float), stream2>>>(m, n, k, dA, dB, dBias, dOut);
         checkCudaError("Linear Kernel Failure");
+
         //start = std::chrono::high_resolution_clock::now();
         // 4.) Copy the result back to host
+        cudaStreamSynchronize(0); // Sync default stram before using dOut on another stream
         cudaMemcpyAsync(hOut, dOut, m * n * sizeof(float), cudaMemcpyDeviceToHost,stream2);
         checkCudaError("cudaMemcpyAsync for Hout");
 
@@ -444,8 +415,8 @@ namespace FixedVectorMath {
         size_t N = A.size();
 
         // 2.) Allocate GPU memory
-        float* dA = new float[N];
-        float* dB = new float[N];
+        float* dA;
+        float* dB;
 
         cudaMalloc(&dA, N * sizeof(float));
         cudaMalloc(&dB, N * sizeof(float));
@@ -472,7 +443,6 @@ namespace FixedVectorMath {
         cudaFree(dA);
         cudaFree(dB);
     }
-
 
     void addCuda(
         FixedVector<FixedVector<float>>& A, 

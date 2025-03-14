@@ -1,5 +1,6 @@
 #ifndef FIXED_VECTOR_MATH_H
 #define FIXED_VECTOR_MATH_H
+#pragma once
 
 #include "FixedVector.hh"
 #include <cmath> // For sqrt and pow
@@ -32,50 +33,50 @@ namespace FixedVectorMath {
         return transposed;
     }
 
-    // Normalize the fixed vector
-    template <typename T>
-    void normalize(
-        FixedVector<T>& vec, 
-        T& mean_out, 
-        T& var_out,
-        T epsilon = 1e-5 // Prevents div by 0 errors.
-    ) {
-        T sum_of_squares = 0;
-        for (std::size_t i = 0; i < vec.size(); i++) {
-            sum_of_squares += vec[i] * vec[i];
-        }
-
-        T magnitude = std::sqrt(sum_of_squares);
-        
-        if (magnitude == 0) {
-            // This occurs when mag < 1e-12 OR when starting the BP
-            return;
-            //throw std::runtime_error("Cannot normalize a vector with zero magnitude.");
-        }
-
-        for (std::size_t i = 0; i < vec.size(); i++) {
-            vec[i] /= magnitude;
-        }
-    }
-
-    // Normalize each row in the matrix
-    // In transformer logic, we do normalization by row
     template <typename T>
     void normalize(
         FixedVector<FixedVector<T>>& matrix,
         FixedVector<T>& means,
         FixedVector<T>& vars,
-        T epsilon = 1e-5 // Prevent div by 0 errors
-        
+        T epsilon = 1e-5
     ) {
-        for (std::size_t i = 0; i < matrix.size(); i++) {
-            normalize(matrix[i], means[i], vars[i]);
+        // We do LN row-by-row. Each row is [d_model] wide.
+        // The means[] and vars[] must be sized == matrix.size().
+    
+        if (matrix.size() != means.size() || matrix.size() != vars.size()) {
+            throw std::runtime_error("Mismatch in dimension for LN forward: matrix vs means/vars.");
+        }
+    
+        // For each row i in [0..sequence_len-1]
+        for (size_t i = 0; i < matrix.size(); i++) {
+            // 1) Compute mean over row i
+            T sumVal = 0.0f;
+            for (size_t k = 0; k < matrix[i].size(); k++) {
+                sumVal += matrix[i][k];
+            }
+            T mean = sumVal / static_cast<T>(matrix[i].size());
+            means[i] = mean; // store for backprop
+    
+            // 2) Compute variance
+            T varVal = 0.0f;
+            for (size_t k = 0; k < matrix[i].size(); k++) {
+                T diff = matrix[i][k] - mean;
+                varVal += diff * diff;
+            }
+            varVal /= static_cast<T>(matrix[i].size());
+            vars[i] = varVal; // store for backprop
+    
+            // 3) Normalize each element
+            T invStd = 1.0f / std::sqrt(varVal + epsilon);
+            for (size_t k = 0; k < matrix[i].size(); k++) {
+                matrix[i][k] = (matrix[i][k] - mean) * invStd;
+            }
         }
     }
 
     // Dot product of matrix
     template <typename T>
-    FixedVector<FixedVector<T>> dotProduct(const FixedVector<FixedVector<T>>& A, const FixedVector<FixedVector<T>>& B) {
+    FixedVector<FixedVector<T>> dot(const FixedVector<FixedVector<T>>& A, const FixedVector<FixedVector<T>>& B) {
         size_t rowsA = A.size();
         size_t rowsB = B.size();
         size_t colsA = A[0].size();
@@ -130,33 +131,9 @@ namespace FixedVectorMath {
             matrix[i] = std::exp(matrix[i] - maxVal); // Stability adjustment
             sumExp += matrix[i];
         }
-
+        sumExp = std::max(sumExp, std::numeric_limits<T>::epsilon());
         for (std::size_t i = 0; i < matrix.size(); i++) {
             matrix[i] /= sumExp;
-        }
-    }
-
-    template<typename T>
-    void mul(FixedVector<T>& out, const FixedVector<T>& A, const FixedVector<T>& B){
-        if (A.size() != B.size() || A.size() != out.size())
-            throw std::invalid_argument("Size mismatch between out = A*B matricies.");
-        
-        for(std::size_t i = 0; i < out.size(); ++i){
-            out[i] = A[i] * B[i]; 
-        }
-    }
-
-    template<typename T>
-     void mul(
-        FixedVector<FixedVector<T>>& out, 
-        const FixedVector<FixedVector<T>>& A, 
-        const FixedVector<FixedVector<T>>& B
-    ){
-        if (A.size() != B.size() || A.size() != out.size())
-            throw std::invalid_argument("Size mismatch between out = A*B matricies.");
-        
-        for(size_t i = 0; i  < A.size(); ++i){
-            mul(out[i], A[i], B[i]);
         }
     }
 
@@ -178,9 +155,55 @@ namespace FixedVectorMath {
         //          [0,    0,    0,    0,    0] ]
         for (std::size_t i = 0; i < scores.size(); ++i) {
             for (std::size_t j = i + 1; j < scores[i].size(); ++j) {
-                scores[i][j] = -std::numeric_limits<T>::infinity();
+                scores[i][j] = std::numeric_limits<T>::lowest();
             }
         }
+    }
+
+    // A simple CPU-based matrix multiply: C = A x B
+    // A is [M x K], B is [K x N], result is [M x N].
+    template <typename T>
+    FixedVector<FixedVector<T>> matrixMultiplyCPU(
+        const FixedVector<FixedVector<T>>& A,
+        const FixedVector<FixedVector<T>>& B
+    ) {
+        // 1) Validate shapes
+        int M = (int)A.size();
+        if (M == 0) {
+            return FixedVector<FixedVector<float>>{};
+        }
+        int K = (int)A[0].size();  
+        for (int i = 1; i < M; i++) {
+            if ((int)A[i].size() != K) {
+                throw std::runtime_error("matrixMultiplyCPU: Inconsistent row size in A.");
+            }
+        }
+
+        if ((int)B.size() != K) {
+            throw std::runtime_error("matrixMultiplyCPU: B must have K rows.");
+        }
+        int N = (int)B[0].size();
+        for (int i = 1; i < K; i++) {
+            if ((int)B[i].size() != N) {
+                throw std::runtime_error("matrixMultiplyCPU: Inconsistent row size in B.");
+            }
+        }
+
+        // 2) Allocate result [M x N], initialized to 0
+        FixedVector<FixedVector<float>> C(M, FixedVector<float>(N, 0.0f));
+
+        // 3) Triple nested loop: for each row i, col j, sum over k
+        for (int i = 0; i < M; i++) {
+            for (int j = 0; j < N; j++) {
+                float sum = 0.0f;
+                for (int k = 0; k < K; k++) {
+                    sum += A[i][k] * B[k][j];
+                }
+                C[i][j] = sum;
+            }
+        }
+
+        return C;
     }
 
     template <typename T>
@@ -235,21 +258,9 @@ namespace FixedVectorMath {
     
     // Forward declarations for CUDA API method defintions
     // Prevents linker errors when building.
-    FixedVector<FixedVector<float>> dotProductCuda(
-        FixedVector<FixedVector<float>>& A,
-        FixedVector<FixedVector<float>>& B
-    );
-
-    void mulCuda(
-        FixedVector<float>& out,
-        FixedVector<float>& A,
-        FixedVector<float>& B
-    );
-
-    void mulCuda(
-        FixedVector<FixedVector<float>>& out,
-        FixedVector<FixedVector<float>>& A,
-        FixedVector<FixedVector<float>>& B
+    FixedVector<FixedVector<float>> dotCuda(
+        const FixedVector<FixedVector<float>>& A,
+        const FixedVector<FixedVector<float>>& B
     );
 
     FixedVector<FixedVector<float>> linearCuda(
@@ -266,6 +277,13 @@ namespace FixedVectorMath {
     void addCuda(
         FixedVector<FixedVector<float>>& A,
         FixedVector<FixedVector<float>>& B
+    );
+
+    void normalizeCuda(
+        FixedVector<FixedVector<float>>& matrix,
+        FixedVector<float>& means,
+        FixedVector<float>& vars,
+        float epsilon = 1e-5f
     );
 }
 

@@ -94,6 +94,38 @@ protected:
   FixedVector<float>              w_out;
   float                           b_out;
 
+  // ADAM Moment Arrays (same shape as corresponding weights)
+  FixedVector<FixedVector<float>> w_q_m; // First moment array denoted by _m
+  FixedVector<FixedVector<float>> w_k_m;
+  FixedVector<FixedVector<float>> w_v_m;
+  FixedVector<FixedVector<float>> w_o_m;
+  FixedVector<FixedVector<float>> w_ff1_m;
+  FixedVector<FixedVector<float>> w_ff2_m;
+  FixedVector<float>              b_ff1_m;
+  FixedVector<float>              b_ff2_m;
+  FixedVector<float>              w_out_m;
+  float                           b_out_m;
+
+  FixedVector<FixedVector<float>> w_q_v; // Second moment array denoted by _v
+  FixedVector<FixedVector<float>> w_k_v;
+  FixedVector<FixedVector<float>> w_v_v;
+  FixedVector<FixedVector<float>> w_o_v;
+  FixedVector<FixedVector<float>> w_ff1_v;
+  FixedVector<FixedVector<float>> w_ff2_v;
+  FixedVector<float>              b_ff1_v;
+  FixedVector<float>              b_ff2_v;
+  FixedVector<float>              w_out_v;
+  float                           b_out_v;
+
+  // Track Adam iteration
+  int adam_step;
+
+  float beta1;
+  float beta2;
+  float epsilon;
+
+  
+
   // std::deque<state_buf>           hist_state_buf;
 private:
   // Function to modify the original filename and append "-OUT" before the extension
@@ -153,7 +185,12 @@ public:
     if (d_model % num_mma_heads || d_model % num_ma_heads){
         throw std::runtime_error("Model size not compatible with number of heads!");
     }
-    lr = config["learning_rate"]; // learning rate
+
+    // Adam hyperparameters
+    beta1 = config["beta1"];
+    beta2 = config["beta2"];
+    epsilon = config["epsilon"];
+    lr = config["learning_rate"];
 
     // Setup Sequence history matrix.
     sequence_history = FixedVector<FixedVector<float>>(sequence_len, FixedVector<float>(d_model, 0.0f));
@@ -169,6 +206,31 @@ public:
     b_ff2 = loadWeights(weights_file, "b_ff2", d_model);
     w_out = loadWeights(weights_file, "w_out", d_model);
     b_out = loadWeights(weights_file, "b_out");
+
+    // Adam moment vectors m and v
+    w_q_m = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f)); 
+    w_k_m = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f)); 
+    w_v_m = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f)); 
+    w_o_m = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f)); 
+    w_ff1_m = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_ff, 0.0f));
+    w_ff2_m = FixedVector<FixedVector<float>>(d_ff, FixedVector<float>(d_model, 0.0f));
+    b_ff1_m = FixedVector<float>(d_ff, 0.0f);
+    b_ff2_m = FixedVector<float>(d_model, 0.0f);
+    w_out_m = FixedVector<float>(d_model, 0.0f);
+    b_out_m = 0.0f;
+    w_q_v = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f)); 
+    w_k_v = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f)); 
+    w_v_v = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f)); 
+    w_o_v = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_model, 0.0f)); 
+    w_ff1_v = FixedVector<FixedVector<float>>(d_model, FixedVector<float>(d_ff, 0.0f));
+    w_ff2_v = FixedVector<FixedVector<float>>(d_ff, FixedVector<float>(d_model, 0.0f));
+    b_ff1_v = FixedVector<float>(d_ff, 0.0f);
+    b_ff2_v = FixedVector<float>(d_model, 0.0f);
+    w_out_v = FixedVector<float>(d_model, 0.0f);
+    b_out_v = 0.0f;
+    // Track adam iteration
+    adam_step = 0;
+
   }
 
   virtual ~TransformerBase() {
