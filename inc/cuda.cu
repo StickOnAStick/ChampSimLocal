@@ -17,6 +17,8 @@ void checkCudaError(const char* message) {
 }
 #define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
 #define TILE_SIZE 32
+#define BLOCK_SIZE 32
+
 
 void print_attention_scores_per_head(float* d_attention_scores, int num_heads, int sequence_len) {
     float* h_attention_scores = new float[num_heads * sequence_len * sequence_len];
@@ -370,7 +372,6 @@ __global__ void softMax(float* output, float* input, int M, int N)
     }
 }
 
-#define BLOCK_SIZE 32
 /*
 -----------------------------------------
     Cuda API Definitions
