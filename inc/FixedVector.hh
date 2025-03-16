@@ -17,8 +17,13 @@ public:
 
   T& operator[](std::size_t idx)
   {
-    if (idx >= vec.size())
-      throw std::out_of_range("Index out of bounds. Vec size: " + std::to_string(vec.size()));
+    if (idx >= vec.size()) {
+      throw std::out_of_range(
+        "Attempted index: " + std::to_string(idx) + "\n"
+        "Vector size: " + std::to_string(vec.size()) + "\n"
+        "Location: " + std::string(__FILE__) + ":" + std::to_string(__LINE__)
+      );      
+    }
     return vec[idx];
   }
 
@@ -27,6 +32,10 @@ public:
     if (idx >= vec.size())
       throw std::out_of_range("Index out of bounds");
     return vec[idx];
+  }
+
+  const T* data() const {
+    return vec.data();
   }
 
   void push(FixedVector<T> new_val)
@@ -39,6 +48,10 @@ public:
       throw std::runtime_error("Cannot push on an empty FixedVector");
     vec.erase(vec.begin());
     vec.push_back(new_val);
+  }
+
+  bool empty() const {
+    return vec.empty();
   }
 
   void push(T input){
