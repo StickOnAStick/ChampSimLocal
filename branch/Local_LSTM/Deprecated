@@ -1,0 +1,3 @@
+Reason for deprecation:
+- Not Transformer
+- Performs worse than transformer 

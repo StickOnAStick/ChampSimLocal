@@ -1,0 +1,8 @@
+Compiles: Yes
+
+Primary idea: 
+Use a transformer-encoder and IP to predict branch histories: The initial idea behind our predictor architecture 
+
+Reason for deprecation:
+- Poor performance 
+- Any sequence > 1 leads to worse performance 

@@ -13,8 +13,8 @@
 // debug settings 
 #define SAVE_INTERVAL 10000 // how often the model saves the weights 
 #define TOGGLE_LEARNING 1 // whether or not the model will learn
-#define SAVE 1  // enable or disable saving the model 
-#define LOAD 1  // enable or disable load the model from the weight file 
+#define SAVE 0 // enable or disable saving the model 
+#define LOAD 0  // enable or disable load the model from the weight file 
 
 std::filesystem::path weight_dir;
 std::string WEIGHT_FILE;
@@ -139,7 +139,6 @@ torch::Tensor TransformerPredictor::predict(uint64_t ip)
     if (forward_count % SAVE_INTERVAL == 0) 
         save_model(*this);
 
-    
     // GLOBAL HISTORY AND IP XOR
     uint64_t transformed_global_history = Global_History.to_ullong() ^ ip;
     for (size_t i = 0; i < GLOBAL_HISTORY_BITS; ++i)

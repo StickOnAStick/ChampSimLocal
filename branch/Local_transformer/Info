@@ -1,0 +1,7 @@
+This model is very good considering it's input size, but it is unable to gain more context that makes the other predictors better, 
+could consider this for a very small implmenentation.
+
+Path and History registers are still included in case I wanted to build off of this idea 
+
+- Future research
+- Attempt an attention only version of this to see if it performs as well

@@ -1,0 +1,12 @@
+Compiles: No
+
+Primary idea: 
+I don't rem
+
+Reason for deprecation:
+- Performed poorly, as I couldn't find a good way to incorperate all of the tage information easily 
+- Unable to incorperate primary bimodal table into inputs 
+
+Possibilities for further research
+- It's possible with the new token method that each table could be sent as a token,
+ this would allow us to incorperate all of the context my initial implementation missed

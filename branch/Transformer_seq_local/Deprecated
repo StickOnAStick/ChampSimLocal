@@ -1,0 +1,10 @@
+Compiles: Yes
+
+Primary idea: 
+Same as Transformer_SEQ, but we give it local history and IP,
+however it looks like at some point i removed that so it's pretty much a copy of Transformer_SEQ
+
+Reason for deprecation:
+- Poor performance 
+- Any sequence > 1 leads to worse performance 
+- Had similar problems to what we discused, indexed local histories don't make sense in a linear time sequence, so the transformer gets confused 

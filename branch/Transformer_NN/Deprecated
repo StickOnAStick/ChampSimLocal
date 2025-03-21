@@ -1,0 +1,8 @@
+Compiles: Yes
+
+Primary idea: 
+First time I tried to implement a Transformer using libtorch
+
+Reason for deprecation:
+- Performed alright similar to Local_transformer, but has lots of unnessessary inputs
+- Superceeded by local_transformer 
