@@ -5,457 +5,359 @@
 #include <mutex>
 #include <array>
 #include <cmath>
+#include <random>
+#include <filesystem>              // for checking/creating the model file
 #include "ooo_cpu.h"
+#include "gen_config.h"
 
-// -------------------------------------------------------------------------
-// Model and history configuration
+namespace fs = std::filesystem;
 
-#define HIDDEN_SIZE 70
-#define NUM_HEADS 5
+// ──────────────────────────────────────────────────────────────────────────
+// PERSISTENCE CONFIGURATION
+// ──────────────────────────────────────────────────────────────────────────
+// (Persistence features removed for now)
 
-// Field bit widths.
-#define IP_BITS 1 // Number of bits to represent the hashed IP token.
-#define DEBUG_INTERVAL 10000
-#define LEARNING_RATE 0.0005
-
-#define PATH_HISTORY_LENGTH 4
-#define PATH_BITS 16
-
-// Global history register is still stored as a long register (256 bits).
-constexpr size_t GLOBAL_HISTORY_REGISTER_BITS = 1024;
-constexpr uint8_t COMPRESSED_HISTORY_BITS = 16;
-
-// New token bit widths.
-#define PREV_BRANCH_TYPE_BITS 3
-#define BRANCH_TARGET_TOKEN_BITS 32
-
-#define LOCAL_HISTORY_TABLES 4
-constexpr std::array<uint16_t, LOCAL_HISTORY_TABLES> HISTORY_TABLE_SIZES = {16, 128, 1024, 8196};
-constexpr std::array<uint8_t, LOCAL_HISTORY_TABLES> HISTORY_TABLE_BITS = {8,8,8,8};
-
-#define TAGE_MIN_LENGTH 3
-#define HISTORY_ALPHA 1.5
-constexpr size_t NUM_MULTISCALE_HISTORY = 12; 
-
-// Compute the multi-scale history lengths at runtime using a geometric progression.
-std::vector<size_t> compute_multi_scale_history_bits(size_t num_levels, double min_length, double alpha) {
-    std::vector<size_t> lengths(num_levels);
-    double power = 1.0;
-    for (size_t i = 0; i < num_levels; i++) {
-        lengths[i] = static_cast<size_t>(min_length * power + 0.5);
-        power *= alpha;
+// ──────────────────────────────────────────────────────────────────────────
+// GLOBAL DETERMINISM SETUP
+// ──────────────────────────────────────────────────────────────────────────
+struct DeterministicSetup {
+    DeterministicSetup() {
+        torch::manual_seed(42);
+        std::srand(42);
+        at::globalContext().setDeterministicCuDNN(true);
+        at::globalContext().setBenchmarkCuDNN(false);
+        at::set_num_threads(1);
     }
-    std::cout << "Multi-scale history lengths:";
-    for (auto l : lengths)
-        std::cout << " " << l;
-    std::cout << std::endl;
-    return lengths;
-}
-std::vector<size_t> multi_scale_history_bits = compute_multi_scale_history_bits(NUM_MULTISCALE_HISTORY, TAGE_MIN_LENGTH, HISTORY_ALPHA);
-
-// Updated NUM_TOKENS: 
-//  1 (hashed IP) + LOCAL_HISTORY_TABLES + NUM_MULTISCALE_HISTORY + PATH_HISTORY_LENGTH + 2 (prev branch type and branch target)
-constexpr size_t NUM_TOKENS = 1 + LOCAL_HISTORY_TABLES + NUM_MULTISCALE_HISTORY + PATH_HISTORY_LENGTH + 2;
-
-std::mutex optimizer_mutex;
+};
+static DeterministicSetup _deterministic_setup;
 
 // -------------------------------------------------------------------------
-// History storage
+// Model & History Config (parameters provided via gen_config.h)
+// -------------------------------------------------------------------------
+constexpr size_t GLOBAL_HISTORY_REGISTER_BITS = 4096;
+constexpr int    MAX_HISTORY   = 4096;
 
-// For local history, we use a std::bitset with capacity 8.
-using HistoryEntry = std::bitset<16>;
-// Local history tables: for each table, for each CPU, a vector (size defined by HISTORY_TABLE_SIZES).
-std::array<std::vector<std::vector<HistoryEntry>>, LOCAL_HISTORY_TABLES> Local_History_Tables;
+constexpr int ceil_mul(int current, double alpha) {
+    double prod = current * alpha;
+    int rounded = static_cast<int>(prod);
+    if (prod > static_cast<double>(rounded)) ++rounded;
+    return (rounded > current) ? rounded : (current + 1);
+}
 
-// Global history register: now 256 bits per CPU.
+template <int N>
+constexpr std::array<int, N> compute_fixed_history_lengths() {
+    std::array<int, N> arr = {};
+    arr[0] = START_HISTORY;
+    for (int i = 1; i < N; i++) {
+        arr[i] = ceil_mul(arr[i - 1], ALPHA);
+        if (arr[i] > MAX_HISTORY) arr[i] = MAX_HISTORY;
+    }
+    return arr;
+}
+constexpr auto fixedHistoryLengths = compute_fixed_history_lengths<NUM_LOCAL_HISTORY_SCALES>();
+
+// Global history register per CPU
 std::vector<std::bitset<GLOBAL_HISTORY_REGISTER_BITS>> Global_History(NUM_CPUS);
 
-// Multi-scale histories: using a type to hold up to 128 bits.
-using MultiHistoryType = unsigned __int128;
-std::vector<std::array<MultiHistoryType, NUM_MULTISCALE_HISTORY>> MultiScale_History(NUM_CPUS);
+// ──────────────────────────────────────────────────────────────────────────
+// PATH HISTORY REGISTER
+// ──────────────────────────────────────────────────────────────────────────
+// For each CPU, maintain a register (vector) of the most recent branch addresses.
+std::vector<std::vector<uint64_t>> Path_History(NUM_CPUS, std::vector<uint64_t>(PATH_HISTORY_REG_SIZE, 0));
 
-// Path history: for each CPU, store the last PATH_HISTORY_LENGTH branch targets.
-std::vector<std::vector<uint64_t>> Path_History(
-    NUM_CPUS, std::vector<uint64_t>(PATH_HISTORY_LENGTH, 0));
-
-// New global state to store previous branch type and branch target for each CPU.
-std::vector<uint8_t> Prev_Branch_Type(NUM_CPUS, 0);
-std::vector<uint8_t> Prev_Branch_Target(NUM_CPUS, 0);
-
-// -------------------------------------------------------------------------
-// Helper function: Hash IP with Global History
-// This function compresses the 256-bit global history register into 64 bits by XOR-folding
-// and then combines it with the instruction pointer using XOR.
-uint64_t hash_ip_with_global(uint64_t ip, const std::bitset<GLOBAL_HISTORY_REGISTER_BITS>& global) {
-    uint64_t compressed = 0;
-    // Fold the global history register into 64 bits.
-    for (size_t i = 0; i < GLOBAL_HISTORY_REGISTER_BITS; i += 64) {
-        uint64_t chunk = 0;
-        for (size_t j = 0; j < 64 && (i + j) < GLOBAL_HISTORY_REGISTER_BITS; j++) {
-            if (global.test(i + j))
-                chunk |= (1ULL << j);
-        }
-        compressed ^= chunk;
+// ──────────────────────────────────────────────────────────────────────────
+// Hashing helper for Local History
+// ──────────────────────────────────────────────────────────────────────────
+inline size_t compute_branch_index(uint64_t ip,
+    const std::bitset<GLOBAL_HISTORY_REGISTER_BITS>& ghist,
+    int history_length,
+    int target_bits,
+    int scale,
+    size_t table_size)
+{
+    uint32_t folded = 0;
+    for (int i = 0; i < history_length; i++) {
+        if (ghist[i])
+            folded ^= ((i + 1) * 0x9e3779b9U) >> (i % target_bits);
     }
-    return ip ^ compressed;
+    folded &= (1U << target_bits) - 1;
+
+    uint32_t ip_part = static_cast<uint32_t>((ip ^ (ip >> 2)) & 0xFFFF);
+    uint32_t mixed = ip_part ^ folded ^ (folded << (scale % 13));
+    mixed ^= (mixed >> (scale + 1));
+
+    return mixed % table_size;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Helper: Compute Path History Token via Hashing & Folding
+// ──────────────────────────────────────────────────────────────────────────
+inline uint16_t compute_path_history_token(const std::vector<uint64_t>& pathHistory, int token_bits) {
+    uint64_t hash = 0;
+    for (size_t i = 0; i < pathHistory.size(); i++) {
+        uint64_t val = pathHistory[i];
+        hash ^= (val >> (i % 32)) ^ (val << (i % 16));
+    }
+    uint16_t folded = 0;
+    while (hash) {
+        folded ^= static_cast<uint16_t>(hash & ((1 << token_bits) - 1));
+        hash >>= token_bits;
+    }
+    return folded;
 }
 
 // -------------------------------------------------------------------------
-// Positional Encoding
-
-torch::Tensor positional_encoding(int seq_len, int hidden_size) {
-    torch::Tensor pos = torch::arange(0, seq_len, torch::kFloat32).unsqueeze(1);
-    torch::Tensor div_term = torch::exp(torch::arange(0, hidden_size, 2, torch::kFloat32) *
-                                          (-std::log(10000.0) / hidden_size));
-    torch::Tensor pe = torch::zeros({seq_len, hidden_size});
-    pe.index_put_({torch::indexing::Slice(), torch::indexing::Slice(0, torch::nullopt, 2)},
-                    torch::sin(pos * div_term));
-    pe.index_put_({torch::indexing::Slice(), torch::indexing::Slice(1, torch::nullopt, 2)},
-                    torch::cos(pos * div_term));
-    return pe;
-}
-
+// Multi-head Self-Attention
 // -------------------------------------------------------------------------
-// Multi-head Self-Attention Module
-
 class MultiHeadSelfAttention : public torch::nn::Module {
 public:
     MultiHeadSelfAttention()
-        : W_q(register_parameter("W_q", torch::randn({HIDDEN_SIZE, HIDDEN_SIZE}))),
-          W_k(register_parameter("W_k", torch::randn({HIDDEN_SIZE, HIDDEN_SIZE}))),
-          W_v(register_parameter("W_v", torch::randn({HIDDEN_SIZE, HIDDEN_SIZE}))),
-          W_o(register_parameter("W_o", torch::randn({HIDDEN_SIZE, HIDDEN_SIZE})))
+      : W_q(register_parameter("W_q", torch::randn({HIDDEN_SIZE, HIDDEN_SIZE}))),
+        W_k(register_parameter("W_k", torch::randn({HIDDEN_SIZE, HIDDEN_SIZE}))),
+        W_v(register_parameter("W_v", torch::randn({HIDDEN_SIZE, HIDDEN_SIZE}))),
+        W_o(register_parameter("W_o", torch::randn({HIDDEN_SIZE, HIDDEN_SIZE}))),
+        forward_count(0)
     {
-        at::set_num_threads(1);  // Ensure each instance runs in a separate thread
         torch::nn::init::xavier_uniform_(W_q);
         torch::nn::init::xavier_uniform_(W_k);
         torch::nn::init::xavier_uniform_(W_v);
         torch::nn::init::xavier_uniform_(W_o);
-        dropout = register_module("dropout", torch::nn::Dropout(torch::nn::DropoutOptions(0.1)));
+        dropout = register_module("dropout", torch::nn::Dropout(DROPOUT_RATE));
+    }
+
+    torch::Tensor forward(torch::Tensor x, int /*step*/) {
+        // Get batch size and sequence length.
+        const auto bs = x.size(0);
+        const auto seq = x.size(1);
+        const auto d = HIDDEN_SIZE / NUM_HEADS;  // dimension per head
+    
+        // Compute linear projections and immediately reshape & permute to separate heads.
+        auto Q = torch::matmul(x, W_q)
+                      .view({bs, seq, NUM_HEADS, d})
+                      .permute({0, 2, 1, 3});
+        auto K = torch::matmul(x, W_k)
+                      .view({bs, seq, NUM_HEADS, d})
+                      .permute({0, 2, 1, 3});
+        auto V = torch::matmul(x, W_v)
+                      .view({bs, seq, NUM_HEADS, d})
+                      .permute({0, 2, 1, 3});
+    
+        // Apply the nonlinearity (ELU + 1) as in FAVOR+ style attention.
+        auto phi_Q = torch::elu(Q) + 1;
+        auto phi_K = torch::elu(K) + 1;
+    
+        // Compute an intermediate product for values: KV = phi_K^T * V.
+        auto KV = torch::matmul(phi_K.transpose(-2, -1), V);
+    
+        // Numerator: phi_Q * (phi_K^T * V)
+        auto numerator = torch::matmul(phi_Q, KV);
+    
+        // Denominator: Rather than multiplying by an all-ones vector, we sum phi_K along the sequence dimension.
+        // phi_K.sum(2, true) has shape {bs, NUM_HEADS, 1, d}, so transpose last dims and perform matmul with phi_Q.
+        auto denominator = torch::matmul(phi_Q, phi_K.sum(2, /*keepdim=*/true).transpose(-2, -1))
+                               .clamp_min(1e-6);
+    
+        // Compute attention output by element-wise division.
+        auto attn = numerator / denominator;
+        
+        // Apply dropout in training mode.
+        if (this->is_training()) {
+            attn = dropout->forward(attn);
+        }
+    
+        // Recombine the heads by permuting and reshaping.
+        auto out = attn.permute({0, 2, 1, 3}).contiguous().view({bs, seq, HIDDEN_SIZE});
+        ++forward_count;
+    
+        // Final linear projection.
+        return torch::matmul(out, W_o);
     }
     
-    torch::Tensor forward(torch::Tensor x, int forward_count) {
-        // x = x + positional_encoding(x.size(1), HIDDEN_SIZE);
-        auto batch_size = x.size(0);
-        auto seq_len = x.size(1);
-        auto Q = torch::matmul(x, W_q).view({batch_size, seq_len, NUM_HEADS, HIDDEN_SIZE / NUM_HEADS}).permute({0, 2, 1, 3});
-        auto K = torch::matmul(x, W_k).view({batch_size, seq_len, NUM_HEADS, HIDDEN_SIZE / NUM_HEADS}).permute({0, 2, 1, 3});
-        auto V = torch::matmul(x, W_v).view({batch_size, seq_len, NUM_HEADS, HIDDEN_SIZE / NUM_HEADS}).permute({0, 2, 1, 3});
-        auto scores = torch::matmul(Q, K.transpose(-2, -1)) / std::sqrt((float)(HIDDEN_SIZE / NUM_HEADS));
-        scores = torch::softmax(scores, -1);
-
-        if (forward_count % DEBUG_INTERVAL == 0) 
-            print_attention_table(scores);
-        // Apply dropout to attention scores.
-        scores = dropout->forward(scores);
-        auto output = torch::matmul(scores, V);
-        output = output.permute({0, 2, 1, 3}).contiguous().view({batch_size, seq_len, HIDDEN_SIZE});
-        return torch::matmul(output, W_o);
-    }
-
 private:
     torch::Tensor W_q, W_k, W_v, W_o;
     torch::nn::Dropout dropout{nullptr};
-
-    // Helper function to print attention scores as a nicely aligned table.
-    void print_attention_table(const torch::Tensor &scores) {
-        // Build token labels.
-        std::vector<std::string> token_labels;
-        token_labels.push_back(" HashedIP");
-        for (size_t i = 0; i < LOCAL_HISTORY_TABLES; i++)
-            token_labels.push_back(" LocalHTR" + std::to_string(i));
-        for (size_t i = 0; i < NUM_MULTISCALE_HISTORY; i++)
-            token_labels.push_back(" MultiGHR" + std::to_string(i));
-        for (size_t i = 0; i < PATH_HISTORY_LENGTH; i++)
-            token_labels.push_back(" PathHist" + std::to_string(i));
-        token_labels.push_back(" PrevBType");
-        token_labels.push_back(" BrTarget");
-
-        // Convert scores tensor to CPU and assume batch size 1.
-        auto scores_cpu = scores.to(torch::kCPU);
-        int num_heads = scores_cpu.size(1);
-        int seq_len = scores_cpu.size(3); // scores shape: [batch, heads, seq_len, seq_len]
-        const int col_width = 10;
-        
-        for (int head = 0; head < num_heads; ++head) {
-            std::cout << "Head " << head << " Attention:" << std::endl;
-            // Print header row.
-            std::ostringstream header;
-            header << std::setw(col_width) << "Token";
-            for (int j = 0; j < seq_len; ++j) {
-                std::string col_label = (j < token_labels.size()) ? token_labels[j] : "T" + std::to_string(j);
-                header << std::setw(col_width) << col_label;
-            }
-            std::cout << header.str() << std::endl;
-            
-            // Print each row.
-            for (int i = 0; i < seq_len; ++i) {
-                std::ostringstream row;
-                std::string row_label = (i < token_labels.size()) ? token_labels[i] : "T" + std::to_string(i);
-                row << std::setw(col_width) << row_label;
-                auto head_scores = scores_cpu[0][head]; // shape: [seq_len, seq_len]
-                for (int j = 0; j < seq_len; ++j) {
-                    float score = head_scores[i][j].item<float>();
-                    row << std::setw(col_width) << std::fixed << std::setprecision(4) << score;
-                }
-                std::cout << row.str() << std::endl;
-            }
-            std::cout << std::endl;
-        }
-    }
-};
-
-// -------------------------------------------------------------------------
-// Helper function to compress multi-scale history
-// This function folds the original multi-history bits into COMPRESSED_HISTORY_BITS bits.
-uint8_t compress_multi_history(MultiHistoryType history, size_t original_bits, size_t target_bits) {
-    while (original_bits > target_bits) {
-        // Fold the upper bits into the lower bits.
-        history = (history & ((1ULL << target_bits) - 1)) ^ (history >> target_bits);
-        original_bits = target_bits; // After one fold, we assume it is target_bits wide.
-    }
-    return static_cast<uint8_t>(history & ((1ULL << target_bits) - 1));
-}
-
-// We define COMPRESSED_HISTORY_BITS to be the width used when compressing multi-scale histories.
-
-
-// -------------------------------------------------------------------------
-// Attention-Only Predictor Module
-
-class AttentionOnlyPredictor : public torch::nn::Module {
-public:
-    AttentionOnlyPredictor()
-        : fc_out(register_module("fc_out", torch::nn::Linear(HIDDEN_SIZE, 1))),
-          attention(register_module("attention", std::make_shared<MultiHeadSelfAttention>())),
-          optimizer(std::make_unique<torch::optim::Adam>(this->parameters(), torch::optim::AdamOptions(LEARNING_RATE))),
-          forward_count(0)
-    {
-        at::set_num_threads(1);
-        // Projection for hashed IP.
-        fc_hash_ip = register_module("fc_hash_ip", torch::nn::Linear(IP_BITS, HIDDEN_SIZE));
-        // One projection per local history table.
-        for (size_t i = 0; i < LOCAL_HISTORY_TABLES; i++) {
-            auto proj = torch::nn::Linear(HISTORY_TABLE_BITS[i], HIDDEN_SIZE);
-            fc_local.push_back(register_module("fc_local_" + std::to_string(i), proj));
-        }
-        // Projections for multi-scale histories: compress each to COMPRESSED_HISTORY_BITS.
-        for (size_t i = 0; i < NUM_MULTISCALE_HISTORY; i++) {
-            auto proj = torch::nn::Linear(COMPRESSED_HISTORY_BITS, HIDDEN_SIZE);
-            fc_multi.push_back(register_module("fc_multi_" + std::to_string(i), proj));
-        }
-        // Projection for path history.
-        fc_path = register_module("fc_path", torch::nn::Linear(PATH_BITS, HIDDEN_SIZE));
-        // New projections for the additional tokens.
-        fc_prev_branch_type = register_module("fc_prev_branch_type", torch::nn::Linear(PREV_BRANCH_TYPE_BITS, HIDDEN_SIZE));
-        fc_branch_target = register_module("fc_branch_target", torch::nn::Linear(BRANCH_TARGET_TOKEN_BITS, HIDDEN_SIZE));
-        
-        layer_norm = register_module("layer_norm", torch::nn::LayerNorm(torch::nn::LayerNormOptions({HIDDEN_SIZE})));
-    }
-
-    // Build the token sequence.
-    // New token ordering:
-    //   Token 0: Hashed IP token (hash(ip, global history register)) [IP_BITS]
-    //   Tokens 1..LOCAL_HISTORY_TABLES: one token per local history table.
-    //   Next NUM_MULTISCALE_HISTORY tokens: one token per multi-scale history (compressed to COMPRESSED_HISTORY_BITS).
-    //   Next PATH_HISTORY_LENGTH tokens: path history tokens.
-    //   Next token: previous branch type (8 bits)
-    //   Last token: branch target (8 bits)
-    torch::Tensor build_tokens(uint64_t ip, int cpu) {
-        std::vector<torch::Tensor> tokens;
-        
-        // Token for hashed IP: compute hash(IP, global history register).
-        uint64_t hashed = hash_ip_with_global(ip, Global_History[cpu]);
-        torch::Tensor token_hash_ip = torch::zeros({1, IP_BITS}, torch::dtype(torch::kFloat32));
-        for (size_t i = 0; i < IP_BITS; ++i)
-            token_hash_ip[0][i] = ((hashed >> i) & 1) ? 1.0f : 0.0f;
-        tokens.push_back(fc_hash_ip(token_hash_ip));
-        
-        // Tokens for each local history table.
-        for (size_t t = 0; t < LOCAL_HISTORY_TABLES; t++) {
-            size_t index = ip % HISTORY_TABLE_SIZES[t];
-            const std::vector<HistoryEntry>& table = Local_History_Tables[t][cpu];
-            const HistoryEntry& bits = table[index];
-            torch::Tensor token_hist = torch::zeros({1, HISTORY_TABLE_BITS[t]}, torch::dtype(torch::kFloat32));
-            for (size_t i = 0; i < HISTORY_TABLE_BITS[t]; i++)
-                token_hist[0][i] = bits.test(i) ? 1.0f : 0.0f;
-            tokens.push_back(fc_local[t](token_hist));
-        }
-        
-        // Tokens for multi-scale histories.
-        for (size_t m = 0; m < NUM_MULTISCALE_HISTORY; m++) {
-            MultiHistoryType history = MultiScale_History[cpu][m];
-            // Compress the multi-scale history down to COMPRESSED_HISTORY_BITS.
-            uint8_t compressed = compress_multi_history(history, multi_scale_history_bits[m], COMPRESSED_HISTORY_BITS);
-            torch::Tensor token_multi = torch::zeros({1, COMPRESSED_HISTORY_BITS}, torch::dtype(torch::kFloat32));
-            for (size_t i = 0; i < COMPRESSED_HISTORY_BITS; i++) {
-                token_multi[0][i] = ((compressed >> i) & 1) ? 1.0f : 0.0f;
-            }
-            tokens.push_back(fc_multi[m](token_multi));
-        }
-        
-        // Tokens for path history.
-        for (size_t j = 0; j < PATH_HISTORY_LENGTH; j++) {
-            uint64_t path = Path_History[cpu][j];
-            torch::Tensor token_path = torch::zeros({1, PATH_BITS}, torch::dtype(torch::kFloat32));
-            for (size_t i = 0; i < PATH_BITS; i++)
-                token_path[0][i] = ((path >> i) & 1) ? 1.0f : 0.0f;
-            tokens.push_back(fc_path(token_path));
-        }
-        
-        // New token for previous branch type.
-        {
-            uint8_t prev_type = Prev_Branch_Type[cpu];
-            torch::Tensor token_prev_type = torch::zeros({1, PREV_BRANCH_TYPE_BITS}, torch::dtype(torch::kFloat32));
-            for (size_t i = 0; i < PREV_BRANCH_TYPE_BITS; i++)
-                token_prev_type[0][i] = ((prev_type >> i) & 1) ? 1.0f : 0.0f;
-            tokens.push_back(fc_prev_branch_type(token_prev_type));
-        }
-        
-        // New token for branch target.
-        {
-            uint8_t br_target = Prev_Branch_Target[cpu];
-            torch::Tensor token_br_target = torch::zeros({1, BRANCH_TARGET_TOKEN_BITS}, torch::dtype(torch::kFloat32));
-            for (size_t i = 0; i < BRANCH_TARGET_TOKEN_BITS; i++)
-                token_br_target[0][i] = ((br_target >> i) & 1) ? 1.0f : 0.0f;
-            tokens.push_back(fc_branch_target(token_br_target));
-        }
-        
-        // Stack tokens along the sequence dimension: resulting shape [1, NUM_TOKENS, HIDDEN_SIZE]
-        torch::Tensor tokens_tensor = torch::cat(tokens, 0).unsqueeze(0);
-        // Print diagnostics on the first call.
-        static bool printed = false;
-        if (!printed) {
-            printed = true;
-            std::cout << "Token tensor shape: " << tokens_tensor.sizes() << std::endl;
-            int total_params = 0;
-            // Parameters from fc_hash_ip.
-            int hash_ip_params = fc_hash_ip->weight.numel() + fc_hash_ip->bias.numel();
-            std::cout << "Hashed IP token parameters: " << hash_ip_params << std::endl;
-            total_params += hash_ip_params;
-            // Parameters from each local history token projection.
-            for (size_t t = 0; t < fc_local.size(); t++) {
-                int local_params = fc_local[t]->weight.numel() + fc_local[t]->bias.numel();
-                std::cout << "Local token " << t << " parameters: " << local_params << std::endl;
-                total_params += local_params;
-            }
-            // Parameters from multi-scale history projections.
-            for (size_t m = 0; m < fc_multi.size(); m++) {
-                int multi_params = fc_multi[m]->weight.numel() + fc_multi[m]->bias.numel();
-                std::cout << "Multi-scale token " << m << " parameters: " << multi_params << std::endl;
-                total_params += multi_params;
-            }
-            // Parameters from path history projection.
-            int path_params = fc_path->weight.numel() + fc_path->bias.numel();
-            std::cout << "Path token parameters: " << path_params << std::endl;
-            total_params += path_params;
-            // Parameters from new tokens.
-            int prev_type_params = fc_prev_branch_type->weight.numel() + fc_prev_branch_type->bias.numel();
-            std::cout << "Prev branch type token parameters: " << prev_type_params << std::endl;
-            total_params += prev_type_params;
-            int br_target_params = fc_branch_target->weight.numel() + fc_branch_target->bias.numel();
-            std::cout << "Branch target token parameters: " << br_target_params << std::endl;
-            total_params += br_target_params;
-            
-            std::cout << "Total token projection parameters: " << total_params << std::endl;
-        }
-        
-        return tokens_tensor;
-    }
-    
-    // Predict: build tokens, apply layer norm and attention, pool, and produce prediction.
-    torch::Tensor predict(uint64_t ip, int cpu) {
-        torch::Tensor tokens = build_tokens(ip, cpu);
-        torch::Tensor x = layer_norm(tokens);
-        x = attention->forward(x, forward_count);
-        auto pooled = x.mean(1);
-        forward_count++;
-        return torch::sigmoid(fc_out(pooled));
-    }
-
-    // Update: compute loss and update model parameters and history.
-    void update(uint64_t ip, uint8_t taken, uint8_t branch_type, int cpu, uint64_t branch_target) {
-        torch::Tensor tokens = build_tokens(ip, cpu);
-        torch::Tensor x = layer_norm(tokens);
-        x = attention->forward(x, forward_count);
-        forward_count++;
-        torch::Tensor prediction = torch::sigmoid(fc_out(x.mean(1)));
-        torch::Tensor target = torch::full({1, 1}, static_cast<float>(taken));
-        torch::Tensor loss = torch::binary_cross_entropy(prediction, target);
-
-        {
-            std::lock_guard<std::mutex> lock(optimizer_mutex);
-            optimizer->zero_grad();
-            loss.backward();
-            optimizer->step();
-        }
-        
-        // Update local history tables.
-        for (size_t t = 0; t < LOCAL_HISTORY_TABLES; t++) {
-            size_t index = ip % HISTORY_TABLE_SIZES[t];
-            Local_History_Tables[t][cpu][index] >>= 1;
-            Local_History_Tables[t][cpu][index].set(HISTORY_TABLE_BITS[t] - 1, taken);
-        }
-        
-        // Update global history register.
-        Global_History[cpu] <<= 1;
-        Global_History[cpu].set(0, taken);
-        
-        // Update multi-scale histories.
-        for (size_t m = 0; m < NUM_MULTISCALE_HISTORY; m++) {
-            MultiScale_History[cpu][m] <<= 1;
-            MultiScale_History[cpu][m] |= taken;
-        }
-        
-        // Update path history.
-        for (int j = PATH_HISTORY_LENGTH - 1; j > 0; j--)
-            Path_History[cpu][j] = Path_History[cpu][j - 1];
-        Path_History[cpu][0] = branch_target & ((1ULL << PATH_BITS) - 1);
-        
-        // Update the new state: store the current branch type and branch target
-        // so that on the next prediction, these values become the "previous" ones.
-        Prev_Branch_Type[cpu] = branch_type;
-        Prev_Branch_Target[cpu] = branch_target & ((1ULL << BRANCH_TARGET_TOKEN_BITS) - 1);
-    }
-
-private:
-    // Projection layers.
-    torch::nn::Linear fc_hash_ip{nullptr}; // Projection for hashed IP token.
-    std::vector<torch::nn::Linear> fc_local;  // One projection per local history table.
-    std::vector<torch::nn::Linear> fc_multi;    // One projection per multi-scale history level.
-    torch::nn::Linear fc_path{nullptr};
-    // New projection layers for the extra tokens.
-    torch::nn::Linear fc_prev_branch_type{nullptr};
-    torch::nn::Linear fc_branch_target{nullptr};
-
-    std::shared_ptr<MultiHeadSelfAttention> attention;
-    torch::nn::LayerNorm layer_norm{nullptr};
-    torch::nn::Linear fc_out{nullptr};
-    std::unique_ptr<torch::optim::Adam> optimizer;
     int forward_count;
 };
 
-AttentionOnlyPredictor transformer_net[NUM_CPUS];
-
 // -------------------------------------------------------------------------
-// Initialization and Interface Functions
-
-void O3_CPU::initialize_branch_predictor() {
-    // Initialize local history tables for each table and each CPU.
-    for (size_t t = 0; t < LOCAL_HISTORY_TABLES; t++) {
-        Local_History_Tables[t].resize(NUM_CPUS);
-        for (size_t cpu = 0; cpu < NUM_CPUS; cpu++) {
-            Local_History_Tables[t][cpu] = std::vector<HistoryEntry>(HISTORY_TABLE_SIZES[t]);
+// MultiScale Attention Predictor
+// -------------------------------------------------------------------------
+class MultiScaleAttentionPredictor : public torch::nn::Module {
+public:
+    MultiScaleAttentionPredictor() : update_count(0), load_count(0) {
+        for (size_t scale = 0; scale < NUM_LOCAL_HISTORY_SCALES; scale++) {
+            uint8_t bit_count = LOCAL_HISTORY_TABLE_BITS[scale];
+            multiLocalHistoryTables.emplace_back(LOCAL_HISTORY_TABLE_SIZES[scale], 0);
+            // Removed validMultiLocalHistoryTables usage entirely.
+            auto proj = torch::nn::Linear(bit_count + 1, HIDDEN_SIZE);
+            fc_local_combined.push_back(
+              register_module("fc_local_combined_" + std::to_string(scale), proj));
         }
+        fc_global_history = register_module("fc_global_history", torch::nn::Linear(GLOBAL_HISTORY_TOKEN_BITS, HIDDEN_SIZE));
+        fc_ip_lsb = register_module("fc_ip_lsb", torch::nn::Linear(IP_LSB_TOKEN_BITS, HIDDEN_SIZE));
+        fc_path_history = register_module("fc_path_history", torch::nn::Linear(PATH_HISTORY_TOKEN_BITS, HIDDEN_SIZE));
+
+        attention  = register_module("attention", std::make_shared<MultiHeadSelfAttention>());
+        fc_out     = register_module("fc_out", torch::nn::Linear(HIDDEN_SIZE, 1));
+        layer_norm = register_module("layer_norm", torch::nn::LayerNorm(std::vector<int64_t>{HIDDEN_SIZE}));
+        optimizer  = std::make_unique<torch::optim::Adam>(parameters(), LEARNING_RATE);
     }
-    // Initialize multi-scale histories to 0 for each CPU.
-    MultiScale_History.assign(NUM_CPUS, std::array<MultiHistoryType, NUM_MULTISCALE_HISTORY>{0});
+
+    torch::Tensor build_tokens(uint64_t ip, int cpu) {
+        // Reserve space for all tokens to avoid dynamic reallocations.
+        std::vector<torch::Tensor> tokens;
+        tokens.reserve(NUM_LOCAL_HISTORY_SCALES + 3);
+    
+        // Build tokens for local history scales.
+        for (size_t scale = 0; scale < NUM_LOCAL_HISTORY_SCALES; scale++) {
+            int historyLength = fixedHistoryLengths[scale];
+            int target_bits   = static_cast<int>(std::log2(LOCAL_HISTORY_TABLE_SIZES[scale]));
+            uint8_t bit_count = LOCAL_HISTORY_TABLE_BITS[scale];
+            size_t table_size = LOCAL_HISTORY_TABLE_SIZES[scale];
+    
+            size_t idx = compute_branch_index(ip, Global_History[cpu],
+                                              historyLength, target_bits, scale, table_size);
+    
+            // Use torch::empty instead of zeros to avoid unnecessary initialization.
+            auto raw = torch::empty({1, bit_count + 1}, torch::kFloat32);
+            // Use a raw pointer to directly access memory.
+            float* raw_data = raw.data_ptr<float>();
+    
+            uint16_t old = multiLocalHistoryTables[scale][idx];
+            for (uint8_t j = 0; j < bit_count; j++) {
+                raw_data[j] = ((old >> j) & 1) ? 1.0f : 0.0f;
+            }
+            // Set the validity bit explicitly.
+            raw_data[bit_count] = 1.0f;
+    
+            // Process the token via the corresponding fully-connected (fc) layer.
+            tokens.push_back(fc_local_combined[scale](raw));
+        }
+    
+        // Global history token
+        {
+            auto global_token = torch::empty({1, GLOBAL_HISTORY_TOKEN_BITS}, torch::kFloat32);
+            float* global_data = global_token.data_ptr<float>();
+    
+            for (int i = 0; i < GLOBAL_HISTORY_TOKEN_BITS; i++) {
+                global_data[i] = Global_History[cpu].test(i) ? 1.0f : 0.0f;
+            }
+            tokens.push_back(fc_global_history(global_token));
+        }
+    
+        // IP LSB token
+        {
+            auto ip_lsb_token = torch::empty({1, IP_LSB_TOKEN_BITS}, torch::kFloat32);
+            float* ip_lsb_data = ip_lsb_token.data_ptr<float>();
+    
+            for (int i = 0; i < IP_LSB_TOKEN_BITS; i++) {
+                ip_lsb_data[i] = ((ip >> i) & 1) ? 1.0f : 0.0f;
+            }
+            tokens.push_back(fc_ip_lsb(ip_lsb_token));
+        }
+    
+        // Path history token
+        {
+            uint16_t path_token_int = compute_path_history_token(Path_History[cpu], PATH_HISTORY_TOKEN_BITS);
+            auto path_token = torch::empty({1, PATH_HISTORY_TOKEN_BITS}, torch::kFloat32);
+            float* path_data = path_token.data_ptr<float>();
+    
+            for (int i = 0; i < PATH_HISTORY_TOKEN_BITS; i++) {
+                path_data[i] = ((path_token_int >> i) & 1) ? 1.0f : 0.0f;
+            }
+            tokens.push_back(fc_path_history(path_token));
+        }
+    
+        // Concatenate all tokens and add a batch dimension.
+        return torch::cat(tokens, 0).unsqueeze(0);
+    }
+    
+
+    uint8_t predict(uint64_t ip, int cpu) {
+        torch::NoGradGuard no_grad;
+        eval();
+        auto tokens = build_tokens(ip, cpu);
+        auto norm   = layer_norm(tokens);
+        auto attn   = attention->forward(norm, 0);
+        auto agg    = attn.mean(1);
+        auto p      = torch::sigmoid(fc_out(agg)).clamp(1e-6, 1-1e-6);
+        return (p.item<double>() > 0.5) ? 1 : 0;
+    }
+
+    void update(uint64_t ip, uint8_t taken, int cpu) {
+        train();
+        auto tokens = build_tokens(ip, cpu);
+        auto norm   = layer_norm(tokens);
+        auto attn   = attention->forward(norm, 0);
+        auto agg    = attn.mean(1);
+        auto pred   = torch::sigmoid(fc_out(agg)).clamp(1e-6, 1-1e-6);
+        auto target = torch::full({1,1}, static_cast<float>(taken));
+        auto loss   = torch::binary_cross_entropy(pred, target);
+
+        optimizer->zero_grad();
+        loss.backward();
+        optimizer->step();
+
+        for (size_t scale = 0; scale < NUM_LOCAL_HISTORY_SCALES; scale++) {
+            int historyLength = fixedHistoryLengths[scale];
+            int target_bits   = static_cast<int>(std::log2(LOCAL_HISTORY_TABLE_SIZES[scale]));
+            uint8_t bit_count = LOCAL_HISTORY_TABLE_BITS[scale];
+            size_t table_size = LOCAL_HISTORY_TABLE_SIZES[scale];
+
+            size_t idx = compute_branch_index(ip, Global_History[cpu],
+                                              historyLength, target_bits, scale, table_size);
+            uint8_t &entry = multiLocalHistoryTables[scale][idx];
+            entry = ((entry << 1) | taken) & ((1 << bit_count) - 1);
+        }
+        Global_History[cpu] <<= 1;
+        Global_History[cpu].set(0, taken);
+
+        {
+            auto &path_reg = Path_History[cpu];
+            for (int i = PATH_HISTORY_REG_SIZE - 1; i > 0; i--) {
+                path_reg[i] = path_reg[i - 1];
+            }
+            path_reg[0] = ip;
+        }
+        // Persistence code removed.
+    }
+
+    void save(torch::serialize::OutputArchive &archive) const override {
+        torch::nn::Module::save(archive);
+    }
+    void load(torch::serialize::InputArchive &archive) override {
+        torch::nn::Module::load(archive);
+    }
+
+private:
+    std::vector<torch::nn::Linear>        fc_local_combined;
+    std::vector<std::vector<uint8_t>>     multiLocalHistoryTables;
+    std::vector<std::vector<bool>>        validMultiLocalHistoryTables;
+    std::shared_ptr<MultiHeadSelfAttention> attention;
+    torch::nn::LayerNorm                  layer_norm{nullptr};
+    torch::nn::Linear                     fc_out{nullptr};
+    torch::nn::Linear                     fc_global_history{nullptr};
+    torch::nn::Linear                     fc_ip_lsb{nullptr};
+    torch::nn::Linear                     fc_path_history{nullptr};
+    std::unique_ptr<torch::optim::Adam>   optimizer;
+    std::mutex                            save_mutex;
+    int                                   update_count, load_count;
+};
+
+MultiScaleAttentionPredictor global_predictor;
+
+// ──────────────────────────────────────────────────────────────────────────
+// O3_CPU interface
+// ──────────────────────────────────────────────────────────────────────────
+void O3_CPU::initialize_branch_predictor() {
+    for (size_t i = 0; i < NUM_LOCAL_HISTORY_SCALES; i++)
+        std::cout << "Fixed history length[" << i << "] = " << fixedHistoryLengths[i] << "\n";
 }
 
 uint8_t O3_CPU::predict_branch(uint64_t ip) {
-    return transformer_net[cpu].predict(ip, cpu).item<float>() > 0.5 ? 1 : 0;
+    return global_predictor.predict(ip, cpu);
 }
 
-void O3_CPU::last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type) {
-    transformer_net[cpu].update(ip, taken, branch_type, cpu, branch_target);
+void O3_CPU::last_branch_result(uint64_t ip, uint64_t, uint8_t taken, uint8_t) {
+    global_predictor.update(ip, taken, cpu);
 }

@@ -1,0 +1,17 @@
+#pragma once
+
+#define GLOBAL_HISTORY_TOKEN_BITS 8
+#define IP_LSB_TOKEN_BITS 20
+
+constexpr int PATH_HISTORY_TOKEN_BITS = 16;
+constexpr int PATH_HISTORY_REG_SIZE   = 32;
+
+constexpr int NUM_LOCAL_HISTORY_SCALES = 8;
+constexpr std::array<uint16_t, NUM_LOCAL_HISTORY_SCALES> LOCAL_HISTORY_TABLE_SIZES = { 4096, 512, 8192, 32768, 128, 32768, 512, 16384 };
+constexpr std::array<uint8_t, NUM_LOCAL_HISTORY_SCALES> LOCAL_HISTORY_TABLE_BITS = { 9, 9, 5, 1, 2, 1, 1, 3 };
+constexpr int    START_HISTORY = 7;
+constexpr double ALPHA         = 1.6192160198621754;
+#define HIDDEN_SIZE 12
+#define NUM_HEADS 3
+#define DROPOUT_RATE 0.1269541592476014
+#define LEARNING_RATE 0.0009389817224075628
